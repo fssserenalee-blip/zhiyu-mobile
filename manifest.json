@@ -1,0 +1,18 @@
+{
+  "name": "知余 · 家庭财务管理",
+  "short_name": "知余",
+  "description": "自动记录、规划并提醒的家庭财务管理系统。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f1",
+  "theme_color": "#18251f",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
