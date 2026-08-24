@@ -396,7 +396,10 @@ export default function FinanceApp() {
 
   useEffect(() => {
     if (!ready) return;
-    const params = new URLSearchParams(window.location.search);
+    // Shortcut payloads use the URL fragment so financial SMS text stays on the
+    // phone and is never sent to the static hosting server as part of the request.
+    const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+    const params = new URLSearchParams(fragment || window.location.search);
     const quickMode = params.get("quick") === "1";
     const sms = params.get("sms");
     const shortcutText = params.get("text");
@@ -779,7 +782,7 @@ export default function FinanceApp() {
           </article>
 
           <aside className="settings-stack">
-            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信仍可通过 <code>/?sms=短信内容</code> 自动识别。</li></ol><p className="fine-print">记账周期固定为每月21日至次月20日；21日生成上期总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
+            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信自动化请使用 <code>/#sms=编码后的短信内容</code>，内容只在手机本地交给知余识别。</li></ol><p className="fine-print">记账周期固定为每月21日至次月20日；21日生成上期总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
             <article className="panel data-card"><p className="eyebrow">本机独立使用</p><h2>数据只保存在这部手机</h2><p className="fine-print">不连接电脑，也不会实时同步。建议每月总结后导出一次备份并存入 iCloud Drive；清除 Safari 网站数据或更换手机前务必先备份。</p></article>
             <article className="panel data-card"><p className="eyebrow">数据与提醒</p><div className="button-stack"><button className="secondary-button" onClick={enableNotifications}>开启系统提醒</button><button className="secondary-button" onClick={exportBackup}>备份到 iCloud Drive</button><button className="danger-button" onClick={resetData}>清空本机数据</button></div></article>
           </aside>
