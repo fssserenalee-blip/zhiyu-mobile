@@ -14,6 +14,7 @@ type Category =
   | "食品水果与日用"
   | "水电物业通讯"
   | "自由消费"
+  | "定投储蓄"
   | "其他";
 
 type Transaction = {
@@ -28,8 +29,9 @@ type Transaction = {
   provisional?: boolean;
   exceptional?: boolean;
   confidence?: "high" | "medium" | "low";
-  paymentKind?: "purchase" | "refund" | "transfer" | "income";
+  paymentKind?: "purchase" | "refund" | "transfer" | "income" | "investment";
   budgetExcluded?: boolean;
+  investmentPlanId?: string;
 };
 
 type Settings = {
@@ -47,8 +49,9 @@ type PlannedExpense = {
   title: string;
   amount: number;
   dueDate: string;
-  frequency: "once" | "monthly" | "yearly";
+  frequency: "once" | "weekly" | "biweekly" | "monthly" | "yearly";
   category: Category;
+  kind?: "expense" | "investment";
   active: boolean;
   paidOccurrences: string[];
 };
@@ -56,6 +59,7 @@ type PlannedExpense = {
 const STORAGE_KEY = "zhiyu-finance-v2";
 const SETTINGS_KEY = "zhiyu-settings-v3";
 const PLANNED_KEY = "zhiyu-planned-v1";
+const INVESTMENT_PLAN_MIGRATION_KEY = "zhiyu-investment-plans-v1";
 const TRACKING_START = "2026-08-21";
 const CYCLE_DAY = 21;
 const DEFAULT_SETTINGS: Settings = {
@@ -68,7 +72,14 @@ const DEFAULT_SETTINGS: Settings = {
   onlineLimit: 0,
 };
 
-const DEFAULT_PLANNED: PlannedExpense[] = [];
+const INVESTMENT_PLANS: PlannedExpense[] = [
+  { id: "investment-child-1", title: "孩子定投（1）", amount: 1000, dueDate: "2026-09-03", frequency: "monthly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
+  { id: "investment-child-2", title: "孩子定投（2）", amount: 1000, dueDate: "2026-09-03", frequency: "monthly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
+  { id: "investment-self-weekly", title: "本人每周定投", amount: 400, dueDate: "2026-08-27", frequency: "weekly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
+  { id: "investment-spouse-biweekly", title: "老公双周定投", amount: 400, dueDate: "2026-09-03", frequency: "biweekly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
+];
+
+const DEFAULT_PLANNED: PlannedExpense[] = INVESTMENT_PLANS;
 
 const normalizeSettings = (value?: Partial<Settings>): Settings => {
   if (!value) return DEFAULT_SETTINGS;
@@ -87,9 +98,10 @@ const CATEGORY_LIMITS: Array<{ name: Category; limit: number }> = [
   { name: "食品水果与日用", limit: 0 },
   { name: "水电物业通讯", limit: 0 },
   { name: "自由消费", limit: 0 },
+  { name: "定投储蓄", limit: 0 },
 ];
 
-const QUICK_CATEGORIES: Category[] = ["食品水果与日用", "孩子", "车辆交通", "自由消费", "其他"];
+const QUICK_CATEGORIES: Category[] = ["食品水果与日用", "孩子", "车辆交通", "自由消费", "定投储蓄", "其他"];
 
 const money = (value: number) =>
   new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Math.max(0, value));
@@ -142,11 +154,40 @@ function nextOccurrence(item: PlannedExpense, today = new Date()): string | null
   const start = dayStart(today);
   if (item.frequency === "once") return current >= start && !item.paidOccurrences.includes(item.dueDate) ? item.dueDate : null;
   while (current < start || item.paidOccurrences.includes(dateKey(current))) {
-    if (item.frequency === "monthly") current.setMonth(current.getMonth() + 1);
-    else current.setFullYear(current.getFullYear() + 1);
+    advanceOccurrence(current, item.frequency);
   }
   return dateKey(current);
 }
+
+function advanceOccurrence(date: Date, frequency: PlannedExpense["frequency"]) {
+  if (frequency === "weekly") date.setDate(date.getDate() + 7);
+  else if (frequency === "biweekly") date.setDate(date.getDate() + 14);
+  else if (frequency === "monthly") date.setMonth(date.getMonth() + 1);
+  else if (frequency === "yearly") date.setFullYear(date.getFullYear() + 1);
+}
+
+function occurrenceDatesInRange(item: PlannedExpense, startKey: string, endKey: string, includePaid = true) {
+  if (!item.active) return [] as string[];
+  const start = dayStart(startKey);
+  const end = dayStart(endKey);
+  const current = dayStart(item.dueDate);
+  const results: string[] = [];
+  if (item.frequency === "once") {
+    const key = dateKey(current);
+    return current >= start && current <= end && (includePaid || !item.paidOccurrences.includes(key)) ? [key] : [];
+  }
+  let guard = 0;
+  while (current < start && guard++ < 1000) advanceOccurrence(current, item.frequency);
+  while (current <= end && guard++ < 1200) {
+    const key = dateKey(current);
+    if (includePaid || !item.paidOccurrences.includes(key)) results.push(key);
+    advanceOccurrence(current, item.frequency);
+  }
+  return results;
+}
+
+const frequencyLabel = (frequency: PlannedExpense["frequency"]) =>
+  frequency === "yearly" ? "每年重复" : frequency === "monthly" ? "每月重复" : frequency === "weekly" ? "每周重复" : frequency === "biweekly" ? "每两周重复" : "一次性";
 
 const daysUntil = (date: string) => Math.ceil((dayStart(date).getTime() - dayStart(new Date()).getTime()) / 86400000);
 
@@ -165,6 +206,7 @@ const normalizeDate = (value: string) => {
 function autoCategory(text: string, source = ""): { category: Category; online: boolean; confidence: "high" | "medium" | "low" } {
   const value = `${text} ${source}`.toLowerCase();
   if (/不计预算|预算外/.test(value)) return { category: "预算外支出", online: false, confidence: "high" };
+  if (/定投|基金申购|基金扣款|理财申购|投资计划/.test(value)) return { category: "定投储蓄", online: false, confidence: "high" };
   if (/房租|老人住房/.test(value)) return { category: "老人住房", online: false, confidence: "high" };
   if (/纸尿裤|拉拉裤|儿童|宝宝|婴儿|童装|早教|滑板车|玩具|摄影/.test(value)) return { category: "孩子", online: false, confidence: "high" };
   if (/保险|好医保|医院|医疗|药|保健|维生素|体检/.test(value)) return { category: "保险医疗", online: false, confidence: "high" };
@@ -202,8 +244,9 @@ function parseSms(text: string): Transaction | null {
   const isIncome = !isRefund && /收入|转入|汇入|入账|到账/.test(text) && !/支出|消费|支付|扣款/.test(text);
   const isTransfer = !isRefund && !isIncome && /转账|转出|汇出|汇款/.test(text);
   const classified = autoCategory(text, "银行短信");
+  const isInvestment = !isRefund && !isIncome && !isTransfer && classified.category === "定投储蓄";
   const category = isTransfer || isIncome ? "其他" : classified.category;
-  const paymentKind = isRefund ? "refund" : isIncome ? "income" : isTransfer ? "transfer" : "purchase";
+  const paymentKind = isRefund ? "refund" : isIncome ? "income" : isTransfer ? "transfer" : isInvestment ? "investment" : "purchase";
   const date = new Date().toISOString();
   return {
     id: makeId(["短信", date.slice(0, 16), amount, text.slice(0, 36)]),
@@ -218,8 +261,19 @@ function parseSms(text: string): Transaction | null {
     exceptional: false,
     confidence: isTransfer || isIncome ? "high" : classified.confidence,
     paymentKind,
-    budgetExcluded: isTransfer || isIncome,
+    budgetExcluded: isTransfer || isIncome || isInvestment,
   };
+}
+
+function matchInvestmentPlan(transaction: Transaction, plans: PlannedExpense[]) {
+  if (transaction.direction !== "expense" || transaction.paymentKind === "refund") return null;
+  const transactionDate = dateKey(new Date(transaction.date));
+  return plans.find((plan) =>
+    plan.active
+    && (plan.kind === "investment" || plan.category === "定投储蓄")
+    && Math.abs(plan.amount - transaction.amount) < 0.01
+    && occurrenceDatesInRange(plan, transactionDate, transactionDate).includes(transactionDate)
+    && !plan.paidOccurrences.includes(transactionDate));
 }
 
 async function parseCsv(file: File): Promise<Transaction[]> {
@@ -371,7 +425,14 @@ export default function FinanceApp() {
       setTab("settings");
       setFlash("首次使用：请先填写你的预算与储蓄计划");
     }
-    if (savedPlanned) setPlannedExpenses(JSON.parse(savedPlanned));
+    const storedPlans: PlannedExpense[] = savedPlanned ? JSON.parse(savedPlanned) : [];
+    if (!localStorage.getItem(INVESTMENT_PLAN_MIGRATION_KEY)) {
+      const existingIds = new Set(storedPlans.map((item) => item.id));
+      setPlannedExpenses([...storedPlans, ...INVESTMENT_PLANS.filter((item) => !existingIds.has(item.id))]);
+      localStorage.setItem(INVESTMENT_PLAN_MIGRATION_KEY, "1");
+    } else {
+      setPlannedExpenses(storedPlans);
+    }
     if (saved) {
       setTransactions(JSON.parse(saved));
       setReady(true);
@@ -409,7 +470,18 @@ export default function FinanceApp() {
     const shortcutCategory = requestedCategory && [...QUICK_CATEGORIES, ...CATEGORY_LIMITS.map((item) => item.name)].includes(requestedCategory)
       ? requestedCategory
       : autoCategory(shortcutMerchant, "iPhone快捷指令").category;
-    const parsed = sms || shortcutText ? parseSms(sms ?? shortcutText ?? "") : null;
+    const parsedRaw = sms || shortcutText ? parseSms(sms ?? shortcutText ?? "") : null;
+    const matchedPlan = parsedRaw ? matchInvestmentPlan(parsedRaw, plannedExpenses) : null;
+    const parsed = parsedRaw && matchedPlan ? {
+      ...parsedRaw,
+      merchant: matchedPlan.title,
+      category: "定投储蓄" as Category,
+      paymentKind: "investment" as const,
+      budgetExcluded: true,
+      investmentPlanId: matchedPlan.id,
+      provisional: false,
+      confidence: "high" as const,
+    } : parsedRaw;
     if (quickMode) {
       setTab("dashboard");
       window.setTimeout(() => {
@@ -419,7 +491,13 @@ export default function FinanceApp() {
     }
     if (parsed) {
       setTransactions((current) => dedupe([parsed, ...current]));
-      setFlash(`已自动记录 ¥${parsed.amount.toFixed(2)}，分类为“${parsed.category}”`);
+      if (matchedPlan) {
+        const occurrence = dateKey(new Date(parsed.date));
+        setPlannedExpenses((current) => current.map((item) => item.id === matchedPlan.id ? { ...item, paidOccurrences: Array.from(new Set([...item.paidOccurrences, occurrence])) } : item));
+      }
+      setFlash(matchedPlan
+        ? `已自动完成“${matchedPlan.title}” ¥${parsed.amount.toFixed(2)}，计入储蓄投资`
+        : `已自动记录 ¥${parsed.amount.toFixed(2)}，分类为“${parsed.category}”`);
     } else if (Number.isFinite(shortcutAmount) && shortcutAmount > 0) {
       const date = new Date().toISOString();
       const item: Transaction = {
@@ -434,7 +512,8 @@ export default function FinanceApp() {
         provisional: false,
         exceptional: false,
         confidence: "high",
-        paymentKind: "purchase",
+        paymentKind: shortcutCategory === "定投储蓄" ? "investment" : "purchase",
+        budgetExcluded: shortcutCategory === "定投储蓄",
       };
       setTransactions((current) => dedupe([item, ...current]));
       setFlash(`快捷指令已记录 ¥${item.amount.toFixed(2)} · ${item.category}`);
@@ -503,15 +582,28 @@ export default function FinanceApp() {
     () => budgetItems.filter((item) => item.exceptional).reduce((sum, item) => sum + budgetValue(item), 0),
     [budgetItems],
   );
+  const investmentItems = useMemo(
+    () => monthItems.filter((item) => item.paymentKind === "investment" || item.category === "定投储蓄"),
+    [monthItems],
+  );
+  const invested = investmentItems.reduce((sum, item) => sum + (item.direction === "refund" ? -item.amount : item.amount), 0);
   const spent = totalSpent - exceptionalSpent;
   const spendingRate = settings.monthlyBudget > 0 ? Math.max(0, spent / settings.monthlyBudget) : 0;
   const remaining = settings.monthlyBudget - spent;
-  const monthlyInvestmentAverage = settings.monthlyInvestment + (settings.weeklyInvestment * 52 / 12);
+  const activeInvestmentPlans = plannedExpenses.filter((item) => item.active && (item.kind === "investment" || item.category === "定投储蓄"));
+  const monthlyInvestmentAverage = activeInvestmentPlans.reduce((sum, item) => {
+    const annualOccurrences = item.frequency === "weekly" ? 52 : item.frequency === "biweekly" ? 26 : item.frequency === "monthly" ? 12 : item.frequency === "yearly" ? 1 : 0;
+    return sum + item.amount * annualOccurrences / 12;
+  }, 0);
   const currentDayKey = dateKey(new Date());
   const todaySpent = transactions
     .filter((item) => item.date.slice(0, 10) === currentDayKey && item.category !== "预算外支出")
     .reduce((sum, item) => sum + budgetValue(item), 0);
   const cycleEnd = dayStart(cycleEndKey(selectedMonth));
+  const plannedInvestmentForCycle = activeInvestmentPlans.reduce((sum, item) =>
+    sum + occurrenceDatesInRange(item, selectedMonth, cycleEndKey(selectedMonth)).length * item.amount, 0);
+  const investmentCompletion = plannedInvestmentForCycle > 0 ? Math.max(0, invested / plannedInvestmentForCycle) : 0;
+  const cashOutflow = Math.max(0, totalSpent + invested);
   const remainingDays = selectedMonth === cycleStartKey(new Date())
     ? Math.max(1, Math.floor((cycleEnd.getTime() - dayStart(new Date()).getTime()) / 86400000) + 1)
     : Math.floor((cycleEnd.getTime() - dayStart(selectedMonth).getTime()) / 86400000) + 1;
@@ -524,8 +616,11 @@ export default function FinanceApp() {
     .map((entry) => ({ ...entry, days: daysUntil(entry.nextDate) }))
     .sort((a, b) => a.nextDate.localeCompare(b.nextDate)), [plannedExpenses]);
   const nextPlanned = upcomingExpenses[0];
-  const dueWithin30Days = upcomingExpenses.filter((entry) => entry.days <= 30).reduce((sum, entry) => sum + entry.item.amount, 0);
-  const dueWithin90Days = upcomingExpenses.filter((entry) => entry.days <= 90).reduce((sum, entry) => sum + entry.item.amount, 0);
+  const todayKey = dateKey(new Date());
+  const in30DaysKey = dateKey(new Date(dayStart(new Date()).getTime() + 30 * 86400000));
+  const in90DaysKey = dateKey(new Date(dayStart(new Date()).getTime() + 90 * 86400000));
+  const dueWithin30Days = plannedExpenses.reduce((sum, item) => sum + occurrenceDatesInRange(item, todayKey, in30DaysKey, false).length * item.amount, 0);
+  const dueWithin90Days = plannedExpenses.reduce((sum, item) => sum + occurrenceDatesInRange(item, todayKey, in90DaysKey, false).length * item.amount, 0);
 
   useEffect(() => {
     if (!ready || !nextPlanned || nextPlanned.days > 30 || !("Notification" in window) || Notification.permission !== "granted") return;
@@ -543,7 +638,7 @@ export default function FinanceApp() {
     .filter((item) => item.online)
     .reduce((sum, item) => sum + budgetValue(item), 0);
 
-  const budgetRows = CATEGORY_LIMITS.map((item) => ({
+  const budgetRows = CATEGORY_LIMITS.filter((item) => item.name !== "定投储蓄").map((item) => ({
     ...item,
     limit: item.name === "食品水果与日用" ? settings.foodLimit : item.name === "自由消费" ? settings.freeLimit : item.limit,
     used: categorySpent(item.name),
@@ -629,6 +724,7 @@ export default function FinanceApp() {
       dueDate: planDraft.dueDate,
       frequency: planDraft.frequency,
       category: planDraft.category,
+      kind: planDraft.category === "定投储蓄" ? "investment" : "expense",
       active: true,
       paidOccurrences: [],
     };
@@ -643,7 +739,49 @@ export default function FinanceApp() {
       active: entry.frequency === "once" ? false : entry.active,
       paidOccurrences: Array.from(new Set([...entry.paidOccurrences, occurrence])),
     }));
+    if (item.kind === "investment" || item.category === "定投储蓄") {
+      const date = `${occurrence}T12:00:00+08:00`;
+      const transaction: Transaction = {
+        id: makeId(["定投计划", item.id, occurrence]),
+        date,
+        amount: item.amount,
+        direction: "expense",
+        merchant: item.title,
+        source: "定投计划",
+        category: "定投储蓄",
+        paymentKind: "investment",
+        budgetExcluded: true,
+        investmentPlanId: item.id,
+        confidence: "high",
+      };
+      setTransactions((current) => dedupe([transaction, ...current]));
+      setFlash(`已完成“${item.title}” ¥${money(item.amount)}，计入储蓄投资`);
+      return;
+    }
     setFlash(`已将“${item.title}”标记为本期已支付`);
+  };
+
+  const changeTransactionCategory = (item: Transaction, category: Category) => {
+    if (category === "定投储蓄") {
+      const matchedPlan = matchInvestmentPlan(item, plannedExpenses);
+      if (matchedPlan) {
+        const occurrence = dateKey(new Date(item.date));
+        setPlannedExpenses((current) => current.map((plan) => plan.id === matchedPlan.id ? { ...plan, paidOccurrences: Array.from(new Set([...plan.paidOccurrences, occurrence])) } : plan));
+      }
+      setTransactions((current) => current.map((entry) => entry.id === item.id ? { ...entry, category, provisional: false, confidence: "high", budgetExcluded: true, paymentKind: "investment", investmentPlanId: matchedPlan?.id } : entry));
+      return;
+    }
+    if (item.paymentKind === "investment" && item.investmentPlanId) {
+      const occurrence = dateKey(new Date(item.date));
+      setPlannedExpenses((current) => current.map((plan) => plan.id === item.investmentPlanId
+        ? { ...plan, paidOccurrences: plan.paidOccurrences.filter((date) => date !== occurrence) }
+        : plan));
+    }
+    setTransactions((current) => current.map((entry) => {
+      if (entry.id !== item.id) return entry;
+      if (entry.paymentKind === "investment") return { ...entry, category, provisional: false, confidence: "high", budgetExcluded: false, paymentKind: "purchase", investmentPlanId: undefined };
+      return { ...entry, category, provisional: false, confidence: "high", budgetExcluded: entry.paymentKind === "transfer" && category !== "其他" ? false : entry.budgetExcluded, paymentKind: entry.paymentKind === "transfer" && category !== "其他" ? "purchase" : entry.paymentKind };
+    }));
   };
 
   const addQuickExpense = () => {
@@ -654,7 +792,7 @@ export default function FinanceApp() {
     }
     const date = new Date().toISOString();
     const merchant = quickDraft.merchant.trim() || "快速记账";
-    const item: Transaction = {
+    let item: Transaction = {
       id: makeId(["快速记账", date, amount, merchant]),
       date,
       amount,
@@ -666,8 +804,15 @@ export default function FinanceApp() {
       provisional: false,
       exceptional: false,
       confidence: "high",
-      paymentKind: "purchase",
+      paymentKind: quickDraft.category === "定投储蓄" ? "investment" : "purchase",
+      budgetExcluded: quickDraft.category === "定投储蓄",
     };
+    const matchedPlan = quickDraft.category === "定投储蓄" ? matchInvestmentPlan(item, plannedExpenses) : null;
+    if (matchedPlan) {
+      const occurrence = dateKey(new Date(date));
+      item = { ...item, merchant: quickDraft.merchant.trim() || matchedPlan.title, investmentPlanId: matchedPlan.id };
+      setPlannedExpenses((current) => current.map((plan) => plan.id === matchedPlan.id ? { ...plan, paidOccurrences: Array.from(new Set([...plan.paidOccurrences, occurrence])) } : plan));
+    }
     setTransactions((current) => dedupe([item, ...current]));
     setSelectedMonth(cycleStartKey(date));
     setQuickDraft((current) => ({ ...current, amount: "", merchant: "" }));
@@ -712,15 +857,15 @@ export default function FinanceApp() {
           <section className="quick-entry" aria-label="快速记一笔支出">
             <div className="quick-entry-top"><div><small>快速记一笔</small><div className="amount-input"><span>¥</span><input ref={quickAmountRef} inputMode="decimal" type="number" min="0" step="0.01" value={quickDraft.amount} placeholder="0.00" onChange={(event) => setQuickDraft({ ...quickDraft, amount: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") addQuickExpense(); }} /></div></div><button onClick={addQuickExpense}>记下</button></div>
             <input className="merchant-input" value={quickDraft.merchant} placeholder="花在什么地方？可不填" onChange={(event) => setQuickDraft({ ...quickDraft, merchant: event.target.value })} />
-            <div className="category-chips" aria-label="选择分类">{QUICK_CATEGORIES.map((category) => <button key={category} className={quickDraft.category === category ? "active" : ""} onClick={() => setQuickDraft({ ...quickDraft, category })}>{category === "食品水果与日用" ? "食品日用" : category === "车辆交通" ? "车辆" : category}</button>)}</div>
+            <div className="category-chips" aria-label="选择分类">{QUICK_CATEGORIES.map((category) => <button key={category} className={quickDraft.category === category ? "active" : ""} onClick={() => setQuickDraft({ ...quickDraft, category })}>{category === "食品水果与日用" ? "食品日用" : category === "车辆交通" ? "车辆" : category === "定投储蓄" ? "定投" : category}</button>)}</div>
             <p className="shortcut-hint">支持 iPhone 快捷指令自动传入短信或金额 · 错账可在“流水”修改</p>
           </section>
 
           <section className="money-at-glance" aria-label="本月可用金额">
             <article className="glance-primary"><small>本月还能花</small><strong className={remaining < 0 ? "negative" : ""}>¥{money(Math.abs(remaining))}</strong><span>{spendingRate >= 1 ? "已超预算" : `已用 ${Math.round(spendingRate * 100)}%`}</span></article>
-            <article><small>今天已花</small><strong>¥{money(todaySpent)}</strong><span>不含资金划转</span></article>
+            <article><small>今天已花</small><strong>¥{money(todaySpent)}</strong><span>不含定投与资金划转</span></article>
             <article><small>今日建议上限</small><strong>¥{money(dailyAvailable)}</strong><span>按剩余 {remainingDays} 天</span></article>
-            <article><small>30天需预留</small><strong>¥{money(dueWithin30Days)}</strong><span>{nextPlanned ? nextPlanned.item.title : "暂无固定支出"}</span></article>
+            <article><small>本期已定投</small><strong>¥{money(invested)}</strong><span>计划 ¥{money(plannedInvestmentForCycle)} · {Math.round(investmentCompletion * 100)}%</span></article>
           </section>
 
           <section className="control-grid">
@@ -735,7 +880,7 @@ export default function FinanceApp() {
 
             <article className="compact-control-card cash-control">
               <div className="compact-heading"><div><small>现金安排</small><h2>先预留，再消费</h2></div><button className="text-button" onClick={() => setTab("settings")}>调整</button></div>
-              <div className="cash-lines"><div><span>生活资金池</span><strong>¥{money(settings.reserveFund)}</strong></div><div><span>月均定投</span><strong>¥{money(monthlyInvestmentAverage)}</strong></div><div><span>本月一次性支出</span><strong>¥{money(exceptionalSpent)}</strong></div></div>
+              <div className="cash-lines"><div><span>本期定投</span><strong>¥{money(invested)} / ¥{money(plannedInvestmentForCycle)}</strong></div><div><span>定投月均</span><strong>¥{money(monthlyInvestmentAverage)}</strong></div><div><span>本期现金流出</span><strong>¥{money(cashOutflow)}</strong></div></div>
             </article>
           </section>
 
@@ -752,9 +897,9 @@ export default function FinanceApp() {
 
       {tab === "transactions" && (
         <section className="workspace-panel">
-          <div className="workspace-heading"><div><p className="eyebrow">{cycleLabel(selectedMonth)} 周期总结</p><h1>本期支出 ¥{money(spent)}</h1><p>共 {monthItems.length} 笔 · 日均 ¥{money(spent / Math.max(1, Math.floor((Math.min(dayStart(new Date()).getTime(), cycleEnd.getTime()) - dayStart(selectedMonth).getTime()) / 86400000) + 1))} · 一次性支出 ¥{money(exceptionalSpent)} · {nextSummaryDate.slice(5).replace("-", "月")}日开始新一期</p></div><button className="secondary-button" onClick={exportBackup}>导出备份</button></div>
+          <div className="workspace-heading"><div><p className="eyebrow">{cycleLabel(selectedMonth)} 周期总结</p><h1>消费 ¥{money(spent)} · 定投 ¥{money(invested)}</h1><p>现金流出 ¥{money(cashOutflow)} · 共 {monthItems.length} 笔 · 消费日均 ¥{money(spent / Math.max(1, Math.floor((Math.min(dayStart(new Date()).getTime(), cycleEnd.getTime()) - dayStart(selectedMonth).getTime()) / 86400000) + 1))} · {nextSummaryDate.slice(5).replace("-", "月")}日开始新一期</p></div><button className="secondary-button" onClick={exportBackup}>导出备份</button></div>
           <div className="transaction-table">
-            {monthItems.length ? monthItems.map((item) => <TransactionRow key={item.id} item={item} onCategory={(category) => setTransactions((current) => current.map((entry) => entry.id === item.id ? { ...entry, category, provisional: false, confidence: "high", budgetExcluded: entry.paymentKind === "transfer" && category !== "其他" ? false : entry.budgetExcluded, paymentKind: entry.paymentKind === "transfer" && category !== "其他" ? "purchase" : entry.paymentKind } : entry))} />) : <div className="empty-state large-empty">还没有这个月的交易记录。银行短信到达后会自动出现。</div>}
+            {monthItems.length ? monthItems.map((item) => <TransactionRow key={item.id} item={item} onCategory={(category) => changeTransactionCategory(item, category)} />) : <div className="empty-state large-empty">还没有这个月的交易记录。银行短信到达后会自动出现。</div>}
           </div>
         </section>
       )}
@@ -764,8 +909,8 @@ export default function FinanceApp() {
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
             <div className="planned-workspace">
-              <div className="planned-list">{upcomingExpenses.length ? upcomingExpenses.map(({ item, nextDate, days }) => <div className="planned-row" key={item.id}><div className="planned-date"><strong>{nextDate.slice(5).replace("-", "/")}</strong><small>{days === 0 ? "今天" : `${days}天后`}</small></div><div className="planned-main"><strong>{item.title}</strong><small>{item.category} · {item.frequency === "yearly" ? "每年重复" : item.frequency === "monthly" ? "每月重复" : "一次性"}</small></div><b>¥{money(item.amount)}</b><div className="planned-actions"><button onClick={() => markPlannedPaid(item, nextDate)}>本期已付</button><button className="delete-plan" onClick={() => setPlannedExpenses((current) => current.filter((entry) => entry.id !== item.id))}>删除</button></div></div>) : <div className="empty-state large-empty">还没有未来固定支出。</div>}</div>
-              <div className="plan-form"><h3>添加一笔未来支出</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="monthly">每月</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><button className="import-button" onClick={addPlannedExpense}>添加并开启提醒</button></div>
+              <div className="planned-list">{upcomingExpenses.length ? upcomingExpenses.map(({ item, nextDate, days }) => <div className="planned-row" key={item.id}><div className="planned-date"><strong>{nextDate.slice(5).replace("-", "/")}</strong><small>{days === 0 ? "今天" : `${days}天后`}</small></div><div className="planned-main"><strong>{item.title}</strong><small>{item.category} · {frequencyLabel(item.frequency)}</small></div><b>¥{money(item.amount)}</b><div className="planned-actions"><button onClick={() => markPlannedPaid(item, nextDate)}>{item.kind === "investment" || item.category === "定投储蓄" ? "确认定投" : "本期已付"}</button><button className="delete-plan" onClick={() => setPlannedExpenses((current) => current.filter((entry) => entry.id !== item.id))}>删除</button></div></div>) : <div className="empty-state large-empty">还没有未来固定支出。</div>}</div>
+              <div className="plan-form"><h3>添加固定支出或定投</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><button className="import-button" onClick={addPlannedExpense}>添加并开启提醒</button></div>
             </div>
           </article>
           <article className="workspace-panel">
@@ -775,8 +920,7 @@ export default function FinanceApp() {
               <SettingField label="食品水果与日用" value={settings.foodLimit} onChange={(value) => setSettings({ ...settings, foodLimit: value })} />
               <SettingField label="自由消费" value={settings.freeLimit} onChange={(value) => setSettings({ ...settings, freeLimit: value })} />
               <SettingField label="非必要网购子额度" value={settings.onlineLimit} onChange={(value) => setSettings({ ...settings, onlineLimit: value })} />
-              <SettingField label="每月固定定投" value={settings.monthlyInvestment} onChange={(value) => setSettings({ ...settings, monthlyInvestment: value })} />
-              <SettingField label="每周定投" value={settings.weeklyInvestment} onChange={(value) => setSettings({ ...settings, weeklyInvestment: value })} />
+              <div className="setting-field"><span>按计划折算定投月均</span><strong>¥{money(monthlyInvestmentAverage)}</strong></div>
               <SettingField label="最低生活资金池" value={settings.reserveFund} onChange={(value) => setSettings({ ...settings, reserveFund: value })} />
             </div>
           </article>
@@ -809,13 +953,13 @@ function BudgetBar({ name, used, limit, tone }: { name: string; used: number; li
 
 function TransactionList({ items }: { items: Transaction[] }) {
   if (!items.length) return <p className="empty-state">暂无流水</p>;
-  return <div className="mini-list">{items.map((item) => <div className="mini-row" key={item.id}><span className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</span><div><strong>{item.merchant}</strong><small>{localDate(item.date)} · {item.category}{item.confidence === "low" ? " · 低可信度" : ""}</small></div><b className={item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>)}</div>;
+  return <div className="mini-list">{items.map((item) => <div className="mini-row" key={item.id}><span className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</span><div><strong>{item.merchant}</strong><small>{localDate(item.date)} · {item.category}{item.confidence === "low" ? " · 低可信度" : ""}</small></div><b className={item.paymentKind === "investment" ? "investment" : item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.paymentKind === "investment" ? "存" : item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>)}</div>;
 }
 
 function TransactionRow({ item, onCategory }: { item: Transaction; onCategory: (category: Category) => void }) {
   const confidenceText = item.confidence === "low" ? " · 分类可信度低" : item.confidence === "medium" ? " · 分类可信度中" : "";
-  const kindText = item.paymentKind === "transfer" ? " · 资金划转/不计预算" : item.paymentKind === "income" ? " · 收入/不计预算" : item.paymentKind === "refund" ? " · 退款" : "";
-  return <div className="transaction-row"><div className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{localDate(item.date)} · {item.source}{confidenceText}{kindText}{item.exceptional ? " · 一次性" : ""}{item.category === "预算外支出" ? " · 不计预算" : ""}</span></div><select value={item.category} onChange={(event) => onCategory(event.target.value as Category)} aria-label={`修改${item.merchant}的分类`}>{[...CATEGORY_LIMITS.map((entry) => entry.name), "预算外支出", "其他"].map((category) => <option key={category}>{category}</option>)}</select><b className={item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>;
+  const kindText = item.paymentKind === "investment" ? " · 储蓄投资/不计消费" : item.paymentKind === "transfer" ? " · 资金划转/不计预算" : item.paymentKind === "income" ? " · 收入/不计预算" : item.paymentKind === "refund" ? " · 退款" : "";
+  return <div className="transaction-row"><div className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{localDate(item.date)} · {item.source}{confidenceText}{kindText}{item.exceptional ? " · 一次性" : ""}{item.category === "预算外支出" ? " · 不计预算" : ""}</span></div><select value={item.category} onChange={(event) => onCategory(event.target.value as Category)} aria-label={`修改${item.merchant}的分类`}>{[...CATEGORY_LIMITS.map((entry) => entry.name), "预算外支出", "其他"].map((category) => <option key={category}>{category}</option>)}</select><b className={item.paymentKind === "investment" ? "investment" : item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.paymentKind === "investment" ? "存" : item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>;
 }
 
 function SettingField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
