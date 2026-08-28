@@ -1,7 +1,7 @@
 {
-  "name": "知余 · 家庭财务管理",
+  "name": "知余 · 个人支出管理",
   "short_name": "知余",
-  "description": "自动记录、规划并提醒的家庭财务管理系统。",
+  "description": "本机记账、个人预算与固定支出计划。",
   "start_url": "./",
   "display": "browser",
   "background_color": "#f4f6f1",

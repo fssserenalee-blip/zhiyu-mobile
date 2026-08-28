@@ -159,3 +159,14 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
   .mobile-bottom-nav{position:fixed;z-index:45;left:8px;right:8px;bottom:max(7px,env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(3,1fr);padding:5px;border:1px solid #dfe3e5;border-radius:18px;background:rgba(255,255,255,.94);box-shadow:0 10px 30px rgba(61,72,82,.16);backdrop-filter:blur(18px)}.mobile-bottom-nav button{display:grid;place-items:center;gap:1px;border:0;border-radius:13px;padding:4px;background:transparent;color:#7b858f;font-size:8px}.mobile-bottom-nav button span{font-size:14px;line-height:1}.mobile-bottom-nav button.active{background:linear-gradient(135deg,#f8f1db,#eef2f0);color:#826b37;font-weight:750}
   .workspace-panel{padding:14px 10px;border-radius:16px;font-size:10px}.workspace-heading{margin-bottom:12px}.workspace-heading h1,.settings-grid h1{font-size:22px}.workspace-heading p:not(.eyebrow),.settings-intro{font-size:9px}.transaction-row{gap:7px;padding:8px 2px}.transaction-main strong{font-size:10px}.transaction-main span{font-size:7px}.transaction-row>b{font-size:9px}.transaction-row select{padding:7px;font-size:9px}.settings-grid{gap:8px}.panel{padding:14px}.planned-workspace{gap:12px}.setting-field{padding:10px 0}.setting-field>span{font-size:9px}.setting-field input{font-size:14px}.planned-row{gap:7px;padding:8px 0}.planned-main strong{font-size:10px}.planned-main small,.planned-date small{font-size:7px}.planned-row>b{font-size:10px}.plan-form{padding:13px}.allocation-grid{gap:13px}.button-stack{gap:6px}
 }
+.personal-setup { margin: 0 0 18px; border: 2px solid #b69a54; }
+.personal-setup h1 { font-size: 22px; }
+.personal-setup p, .personal-setup li, .personal-plan-card p, .personal-plan-card li { font-size: 13px; line-height: 1.7; }
+.personal-setup ul, .personal-plan-card ul { padding-left: 20px; }
+.personal-setup details { margin: 14px 0; }
+.personal-setup summary { cursor: pointer; font-size: 14px; }
+.personal-setup button { margin: 8px 8px 0 0; }
+.setup-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.setup-summary span { background: #f5f7f5; border-radius: 10px; padding: 10px; font-size: 12px; }
+.setup-summary b { display: block; margin-top: 5px; }
+.personal-plan-card > small { color: #717b79; }

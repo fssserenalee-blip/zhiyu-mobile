@@ -2,9 +2,10 @@
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { decodePersonalSetup, mergeSetupPlans, parsePersonalSetup, type PersonalSetup } from "./personal-plan";
 
 type Direction = "expense" | "refund";
-type Category =
+export type Category =
   | "预算外支出"
   | "老人住房"
   | "孩子"
@@ -13,6 +14,7 @@ type Category =
   | "车辆交通"
   | "食品水果与日用"
   | "水电物业通讯"
+  | "物业费"
   | "自由消费"
   | "定投储蓄"
   | "其他";
@@ -34,7 +36,7 @@ type Transaction = {
   investmentPlanId?: string;
 };
 
-type Settings = {
+export type Settings = {
   monthlyBudget: number;
   reserveFund: number;
   monthlyInvestment: number;
@@ -42,14 +44,18 @@ type Settings = {
   foodLimit: number;
   freeLimit: number;
   onlineLimit: number;
+  categoryLimits?: Partial<Record<Category, number>>;
+  excludedCategories?: Category[];
+  billCategories?: Category[];
+  budgetNotes?: string[];
 };
 
-type PlannedExpense = {
+export type PlannedExpense = {
   id: string;
   title: string;
   amount: number;
   dueDate: string;
-  frequency: "once" | "weekly" | "biweekly" | "monthly" | "yearly";
+  frequency: "once" | "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
   category: Category;
   kind?: "expense" | "investment";
   active: boolean;
@@ -59,7 +65,7 @@ type PlannedExpense = {
 const STORAGE_KEY = "zhiyu-finance-v2";
 const SETTINGS_KEY = "zhiyu-settings-v3";
 const PLANNED_KEY = "zhiyu-planned-v1";
-const INVESTMENT_PLAN_MIGRATION_KEY = "zhiyu-investment-plans-v1";
+const PERSONAL_SETUP_KEY = "zhiyu-personal-setup-v1";
 const TRACKING_START = "2026-08-21";
 const CYCLE_DAY = 21;
 const DEFAULT_SETTINGS: Settings = {
@@ -72,14 +78,8 @@ const DEFAULT_SETTINGS: Settings = {
   onlineLimit: 0,
 };
 
-const INVESTMENT_PLANS: PlannedExpense[] = [
-  { id: "investment-child-1", title: "孩子定投（1）", amount: 1000, dueDate: "2026-09-03", frequency: "monthly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
-  { id: "investment-child-2", title: "孩子定投（2）", amount: 1000, dueDate: "2026-09-03", frequency: "monthly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
-  { id: "investment-self-weekly", title: "本人每周定投", amount: 400, dueDate: "2026-08-27", frequency: "weekly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
-  { id: "investment-spouse-biweekly", title: "老公双周定投", amount: 400, dueDate: "2026-09-03", frequency: "biweekly", category: "定投储蓄", kind: "investment", active: true, paidOccurrences: [] },
-];
-
-const DEFAULT_PLANNED: PlannedExpense[] = INVESTMENT_PLANS;
+// No personal amounts or schedules belong in the public application bundle.
+const DEFAULT_PLANNED: PlannedExpense[] = [];
 
 const normalizeSettings = (value?: Partial<Settings>): Settings => {
   if (!value) return DEFAULT_SETTINGS;
@@ -97,14 +97,16 @@ const CATEGORY_LIMITS: Array<{ name: Category; limit: number }> = [
   { name: "车辆交通", limit: 0 },
   { name: "食品水果与日用", limit: 0 },
   { name: "水电物业通讯", limit: 0 },
+  { name: "物业费", limit: 0 },
   { name: "自由消费", limit: 0 },
   { name: "定投储蓄", limit: 0 },
+  { name: "其他", limit: 0 },
 ];
 
 const QUICK_CATEGORIES: Category[] = ["食品水果与日用", "孩子", "车辆交通", "自由消费", "定投储蓄", "其他"];
 
 const money = (value: number) =>
-  new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Math.max(0, value));
+  new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(Math.max(0, value));
 
 const localDate = (date: string) => {
   const d = new Date(date);
@@ -163,6 +165,7 @@ function advanceOccurrence(date: Date, frequency: PlannedExpense["frequency"]) {
   if (frequency === "weekly") date.setDate(date.getDate() + 7);
   else if (frequency === "biweekly") date.setDate(date.getDate() + 14);
   else if (frequency === "monthly") date.setMonth(date.getMonth() + 1);
+  else if (frequency === "quarterly") date.setMonth(date.getMonth() + 3);
   else if (frequency === "yearly") date.setFullYear(date.getFullYear() + 1);
 }
 
@@ -187,7 +190,7 @@ function occurrenceDatesInRange(item: PlannedExpense, startKey: string, endKey: 
 }
 
 const frequencyLabel = (frequency: PlannedExpense["frequency"]) =>
-  frequency === "yearly" ? "每年重复" : frequency === "monthly" ? "每月重复" : frequency === "weekly" ? "每周重复" : frequency === "biweekly" ? "每两周重复" : "一次性";
+  frequency === "yearly" ? "每年重复" : frequency === "quarterly" ? "每季度重复" : frequency === "monthly" ? "每月重复" : frequency === "weekly" ? "每周重复" : frequency === "biweekly" ? "每两周重复" : "一次性";
 
 const daysUntil = (date: string) => Math.ceil((dayStart(date).getTime() - dayStart(new Date()).getTime()) / 86400000);
 
@@ -212,7 +215,8 @@ function autoCategory(text: string, source = ""): { category: Category; online: 
   if (/保险|好医保|医院|医疗|药|保健|维生素|体检/.test(value)) return { category: "保险医疗", online: false, confidence: "high" };
   if (/赡养|养老/.test(value)) return { category: "老人赡养", online: false, confidence: "high" };
   if (/滴滴|停车|高速|车票|交通|加油|汽油|充电|车辆|哈啰/.test(value)) return { category: "车辆交通", online: false, confidence: "high" };
-  if (/物业|水费|电费|燃气|通讯|话费|宽带/.test(value)) return { category: "水电物业通讯", online: false, confidence: "high" };
+  if (/物业/.test(value)) return { category: "物业费", online: false, confidence: "high" };
+  if (/水费|电费|燃气|通讯|话费|宽带/.test(value)) return { category: "水电物业通讯", online: false, confidence: "high" };
   if (/超市|山姆|王鲜生|菜店|水果|生鲜|食品|外卖|餐饮|饭|小笼包|烤鸭|水饺|甜品|海鲜|干果|便利|团购|个人转账/.test(value)) {
     return { category: "食品水果与日用", online: false, confidence: "high" };
   }
@@ -413,6 +417,9 @@ export default function FinanceApp() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState("");
+  const [pendingSetup, setPendingSetup] = useState<PersonalSetup | null>(null);
+  const [appliedSetupId, setAppliedSetupId] = useState("");
+  const setupInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const quickAmountRef = useRef<HTMLInputElement>(null);
 
@@ -420,19 +427,14 @@ export default function FinanceApp() {
     const saved = localStorage.getItem(STORAGE_KEY);
     const savedSettings = localStorage.getItem(SETTINGS_KEY);
     const savedPlanned = localStorage.getItem(PLANNED_KEY);
+    setAppliedSetupId(localStorage.getItem(PERSONAL_SETUP_KEY) ?? "");
     if (savedSettings) setSettings(normalizeSettings(JSON.parse(savedSettings)));
     else {
       setTab("settings");
       setFlash("首次使用：请先填写你的预算与储蓄计划");
     }
     const storedPlans: PlannedExpense[] = savedPlanned ? JSON.parse(savedPlanned) : [];
-    if (!localStorage.getItem(INVESTMENT_PLAN_MIGRATION_KEY)) {
-      const existingIds = new Set(storedPlans.map((item) => item.id));
-      setPlannedExpenses([...storedPlans, ...INVESTMENT_PLANS.filter((item) => !existingIds.has(item.id))]);
-      localStorage.setItem(INVESTMENT_PLAN_MIGRATION_KEY, "1");
-    } else {
-      setPlannedExpenses(storedPlans);
-    }
+    setPlannedExpenses(storedPlans);
     if (saved) {
       setTransactions(JSON.parse(saved));
       setReady(true);
@@ -448,12 +450,64 @@ export default function FinanceApp() {
   }, [transactions, ready]);
 
   useEffect(() => {
+    if (!ready) return;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }, [settings]);
+  }, [settings, ready]);
 
   useEffect(() => {
+    if (!ready) return;
     localStorage.setItem(PLANNED_KEY, JSON.stringify(plannedExpenses));
-  }, [plannedExpenses]);
+  }, [plannedExpenses, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const readPlanLink = () => {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const encoded = params.get("plan");
+      if (!encoded) return;
+      // Remove private payload from the visible URL immediately. Never send it
+      // through query parameters, fetch, analytics, or a remote storage service.
+      window.history.replaceState({}, "", window.location.pathname + window.location.search);
+      try {
+        setPendingSetup(decodePersonalSetup(encoded));
+        setTab("settings");
+      } catch (error) {
+        setFlash(error instanceof Error ? error.message : "无法读取个人计划");
+      }
+    };
+    readPlanLink();
+    window.addEventListener("hashchange", readPlanLink);
+    return () => window.removeEventListener("hashchange", readPlanLink);
+  }, [ready]);
+
+  const readSetupFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (file.size > 30000) throw new Error("请选择个人计划文件，不是交易流水备份。");
+      setPendingSetup(parsePersonalSetup(JSON.parse(await file.text())));
+      setTab("settings");
+    } catch (error) {
+      setFlash(error instanceof Error ? error.message : "计划文件无效");
+    } finally { event.target.value = ""; }
+  };
+
+  const applyPersonalSetup = () => {
+    if (!pendingSetup || pendingSetup.id === appliedSetupId) return;
+    const mergedPlans = mergeSetupPlans(plannedExpenses, pendingSetup.plannedExpenses);
+    try {
+      localStorage.setItem("zhiyu-before-personal-setup", JSON.stringify({ settings, plannedExpenses }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(pendingSetup.settings));
+      localStorage.setItem(PLANNED_KEY, JSON.stringify(mergedPlans));
+      localStorage.setItem(PERSONAL_SETUP_KEY, pendingSetup.id);
+      setSettings(pendingSetup.settings);
+      setPlannedExpenses(mergedPlans);
+      setAppliedSetupId(pendingSetup.id);
+      setPendingSetup(null);
+      setTab("dashboard");
+      setFlash("个人计划已保存到本机，原有流水及已付记录保留。");
+    } catch { setFlash("本机保存失败，请检查Safari存储空间；请勿清除已有网站数据。"); }
+  };
 
   useEffect(() => {
     if (!ready) return;
@@ -587,12 +641,13 @@ export default function FinanceApp() {
     [monthItems],
   );
   const invested = investmentItems.reduce((sum, item) => sum + (item.direction === "refund" ? -item.amount : item.amount), 0);
-  const spent = totalSpent - exceptionalSpent;
+  const separateBillsSpent = budgetItems.filter(item => !item.exceptional && settings.billCategories?.includes(item.category)).reduce((sum, item) => sum + budgetValue(item), 0);
+  const spent = totalSpent - exceptionalSpent - separateBillsSpent;
   const spendingRate = settings.monthlyBudget > 0 ? Math.max(0, spent / settings.monthlyBudget) : 0;
   const remaining = settings.monthlyBudget - spent;
   const activeInvestmentPlans = plannedExpenses.filter((item) => item.active && (item.kind === "investment" || item.category === "定投储蓄"));
   const monthlyInvestmentAverage = activeInvestmentPlans.reduce((sum, item) => {
-    const annualOccurrences = item.frequency === "weekly" ? 52 : item.frequency === "biweekly" ? 26 : item.frequency === "monthly" ? 12 : item.frequency === "yearly" ? 1 : 0;
+    const annualOccurrences = item.frequency === "weekly" ? 52 : item.frequency === "biweekly" ? 26 : item.frequency === "monthly" ? 12 : item.frequency === "quarterly" ? 4 : item.frequency === "yearly" ? 1 : 0;
     return sum + item.amount * annualOccurrences / 12;
   }, 0);
   const currentDayKey = dateKey(new Date());
@@ -602,6 +657,7 @@ export default function FinanceApp() {
   const cycleEnd = dayStart(cycleEndKey(selectedMonth));
   const plannedInvestmentForCycle = activeInvestmentPlans.reduce((sum, item) =>
     sum + occurrenceDatesInRange(item, selectedMonth, cycleEndKey(selectedMonth)).length * item.amount, 0);
+  const plannedBillsForCycle = plannedExpenses.filter(item => item.active && settings.billCategories?.includes(item.category)).reduce((sum, item) => sum + occurrenceDatesInRange(item, selectedMonth, cycleEndKey(selectedMonth)).length * item.amount, 0);
   const investmentCompletion = plannedInvestmentForCycle > 0 ? Math.max(0, invested / plannedInvestmentForCycle) : 0;
   const cashOutflow = Math.max(0, totalSpent + invested);
   const remainingDays = selectedMonth === cycleStartKey(new Date())
@@ -638,9 +694,9 @@ export default function FinanceApp() {
     .filter((item) => item.online)
     .reduce((sum, item) => sum + budgetValue(item), 0);
 
-  const budgetRows = CATEGORY_LIMITS.filter((item) => item.name !== "定投储蓄").map((item) => ({
+  const budgetRows = CATEGORY_LIMITS.filter((item) => item.name !== "定投储蓄" && !settings.excludedCategories?.includes(item.name) && !settings.billCategories?.includes(item.name)).map((item) => ({
     ...item,
-    limit: item.name === "食品水果与日用" ? settings.foodLimit : item.name === "自由消费" ? settings.freeLimit : item.limit,
+    limit: item.name === "食品水果与日用" ? settings.foodLimit : item.name === "自由消费" ? settings.freeLimit : (settings.categoryLimits?.[item.name] ?? item.limit),
     used: categorySpent(item.name),
   }));
 
@@ -823,6 +879,18 @@ export default function FinanceApp() {
     <main className="app-shell">
       {flash && <div className="toast" role="status">{flash}</div>}
       <input ref={fileInput} className="hidden-input" type="file" multiple accept=".csv,.xlsx,.xls,.pdf,.json" onChange={handleFiles} />
+      <input ref={setupInput} className="hidden-input" type="file" accept=".json,application/json" onChange={readSetupFile} />
+
+      {pendingSetup && <section className="personal-setup workspace-panel" aria-label="确认个人计划">
+        <p className="eyebrow">个人计划 · 仅保存在本机</p><h1>确认个人计划</h1>
+        <p>日常每期上限 <strong>¥{money(pendingSetup.settings.monthlyBudget)}</strong>，每月21日开启新一期。房租、物业、保险另列；定投不计入消费。</p>
+        <div className="setup-summary"><span>食品日用 <b>¥{money(pendingSetup.settings.foodLimit)}</b></span><span>自由消费 <b>¥{money(pendingSetup.settings.freeLimit)}</b></span><span>网购子额度 <b>¥{money(pendingSetup.settings.onlineLimit)}</b></span><span>资金池目标（非余额） <b>¥{money(pendingSetup.settings.reserveFund)}</b></span></div>
+        <ul>{pendingSetup.settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
+        <details><summary>核对 {pendingSetup.plannedExpenses.length} 项固定支出与定投</summary><ul>{pendingSetup.plannedExpenses.map(item => <li key={item.id}>{item.title} · ¥{money(item.amount)} · {item.dueDate}起 · {frequencyLabel(item.frequency)}</li>)}</ul></details>
+        <p className="fine-print">保存只更新计划，不增加已付账单，不删除原有流水。专用链接包含你的计划，请勿转发；金额不会随网址请求发送给网站服务器。</p>
+        {pendingSetup.id === appliedSetupId ? <p role="status">此计划已保存，不会重复添加或覆盖你的后续调整。</p> : <button className="import-button" onClick={applyPersonalSetup}>保存到本机</button>}
+        <button className="secondary-button" onClick={() => setPendingSetup(null)}>{pendingSetup.id === appliedSetupId ? "关闭" : "暂不更改"}</button>
+      </section>}
 
       <header className="app-header">
         <button className="brand" onClick={() => setTab("dashboard")} aria-label="返回财务总览">
@@ -857,12 +925,12 @@ export default function FinanceApp() {
           <section className="quick-entry" aria-label="快速记一笔支出">
             <div className="quick-entry-top"><div><small>快速记一笔</small><div className="amount-input"><span>¥</span><input ref={quickAmountRef} inputMode="decimal" type="number" min="0" step="0.01" value={quickDraft.amount} placeholder="0.00" onChange={(event) => setQuickDraft({ ...quickDraft, amount: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") addQuickExpense(); }} /></div></div><button onClick={addQuickExpense}>记下</button></div>
             <input className="merchant-input" value={quickDraft.merchant} placeholder="花在什么地方？可不填" onChange={(event) => setQuickDraft({ ...quickDraft, merchant: event.target.value })} />
-            <div className="category-chips" aria-label="选择分类">{QUICK_CATEGORIES.map((category) => <button key={category} className={quickDraft.category === category ? "active" : ""} onClick={() => setQuickDraft({ ...quickDraft, category })}>{category === "食品水果与日用" ? "食品日用" : category === "车辆交通" ? "车辆" : category === "定投储蓄" ? "定投" : category}</button>)}</div>
+            <div className="category-chips" aria-label="选择分类">{QUICK_CATEGORIES.filter(category => !settings.excludedCategories?.includes(category)).map((category) => <button key={category} className={quickDraft.category === category ? "active" : ""} onClick={() => setQuickDraft({ ...quickDraft, category })}>{category === "食品水果与日用" ? "食品日用" : category === "车辆交通" ? "车辆" : category === "定投储蓄" ? "定投" : category}</button>)}</div>
             <p className="shortcut-hint">支持 iPhone 快捷指令自动传入短信或金额 · 错账可在“流水”修改</p>
           </section>
 
           <section className="money-at-glance" aria-label="本月可用金额">
-            <article className="glance-primary"><small>本月还能花</small><strong className={remaining < 0 ? "negative" : ""}>¥{money(Math.abs(remaining))}</strong><span>{spendingRate >= 1 ? "已超预算" : `已用 ${Math.round(spendingRate * 100)}%`}</span></article>
+            <article className="glance-primary"><small>日常还能花</small><strong className={remaining < 0 ? "negative" : ""}>¥{money(Math.abs(remaining))}</strong><span>{spendingRate >= 1 ? "已超预算" : `已用 ${Math.round(spendingRate * 100)}%`}</span></article>
             <article><small>今天已花</small><strong>¥{money(todaySpent)}</strong><span>不含定投与资金划转</span></article>
             <article><small>今日建议上限</small><strong>¥{money(dailyAvailable)}</strong><span>按剩余 {remainingDays} 天</span></article>
             <article><small>本期已定投</small><strong>¥{money(invested)}</strong><span>计划 ¥{money(plannedInvestmentForCycle)} · {Math.round(investmentCompletion * 100)}%</span></article>
@@ -906,22 +974,30 @@ export default function FinanceApp() {
 
       {tab === "settings" && (
         <section className="settings-grid">
+          <article className="workspace-panel full-width personal-plan-card">
+            <p className="eyebrow">个人计划 · 仅保存在本机</p><h2>{appliedSetupId ? "个人计划已启用" : "启用你的个人计划"}</h2>
+            <p className="settings-intro">使用专用链接确认一次即可；也可导入私人的计划文件。原有流水会保留，重复打开同一计划不会重复添加。</p>
+            <button className="secondary-button" onClick={() => setupInput.current?.click()}>导入个人计划</button>
+            <ul>{settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
+            {settings.billCategories?.length ? <p>本期日常额度 ¥{money(settings.monthlyBudget)} ＋ 单列账单计划 ¥{money(plannedBillsForCycle)}；单列账单已记 ¥{money(separateBillsSpent)}。定投另计。</p> : null}
+            <small>版本：本机计划 2026.08.28</small>
+          </article>
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
             <div className="planned-workspace">
               <div className="planned-list">{upcomingExpenses.length ? upcomingExpenses.map(({ item, nextDate, days }) => <div className="planned-row" key={item.id}><div className="planned-date"><strong>{nextDate.slice(5).replace("-", "/")}</strong><small>{days === 0 ? "今天" : `${days}天后`}</small></div><div className="planned-main"><strong>{item.title}</strong><small>{item.category} · {frequencyLabel(item.frequency)}</small></div><b>¥{money(item.amount)}</b><div className="planned-actions"><button onClick={() => markPlannedPaid(item, nextDate)}>{item.kind === "investment" || item.category === "定投储蓄" ? "确认定投" : "本期已付"}</button><button className="delete-plan" onClick={() => setPlannedExpenses((current) => current.filter((entry) => entry.id !== item.id))}>删除</button></div></div>) : <div className="empty-state large-empty">还没有未来固定支出。</div>}</div>
-              <div className="plan-form"><h3>添加固定支出或定投</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><button className="import-button" onClick={addPlannedExpense}>添加并开启提醒</button></div>
+              <div className="plan-form"><h3>添加固定支出或定投</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option><option value="quarterly">每季度</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><button className="import-button" onClick={addPlannedExpense}>添加并开启提醒</button></div>
             </div>
           </article>
           <article className="workspace-panel">
             <p className="eyebrow">支出与储蓄计划</p><h1>你的财务边界</h1><p className="settings-intro">先设置由你管理的支出范围、分类额度与储蓄目标；所有设置只保存在当前设备。</p>
             <div className="setting-list">
-              <SettingField label="本人管理月支出上限" value={settings.monthlyBudget} onChange={(value) => setSettings({ ...settings, monthlyBudget: value })} />
+              <SettingField label="日常每期支出上限（单列账单另计）" value={settings.monthlyBudget} onChange={(value) => setSettings({ ...settings, monthlyBudget: value })} />
               <SettingField label="食品水果与日用" value={settings.foodLimit} onChange={(value) => setSettings({ ...settings, foodLimit: value })} />
               <SettingField label="自由消费" value={settings.freeLimit} onChange={(value) => setSettings({ ...settings, freeLimit: value })} />
               <SettingField label="非必要网购子额度" value={settings.onlineLimit} onChange={(value) => setSettings({ ...settings, onlineLimit: value })} />
               <div className="setting-field"><span>按计划折算定投月均</span><strong>¥{money(monthlyInvestmentAverage)}</strong></div>
-              <SettingField label="最低生活资金池" value={settings.reserveFund} onChange={(value) => setSettings({ ...settings, reserveFund: value })} />
+              <SettingField label="生活资金池目标（非实际余额）" value={settings.reserveFund} onChange={(value) => setSettings({ ...settings, reserveFund: value })} />
             </div>
           </article>
 
@@ -932,7 +1008,7 @@ export default function FinanceApp() {
           </aside>
 
           <article className="workspace-panel full-width">
-            <div className="panel-heading"><div><p className="eyebrow">完整月度预算</p><h2>¥{money(settings.monthlyBudget)} 如何分配</h2></div><span className="soft-badge">定投不计入消费</span></div>
+            <div className="panel-heading"><div><p className="eyebrow">日常每期预算</p><h2>¥{money(settings.monthlyBudget)} 如何分配</h2></div><span className="soft-badge">单列账单与定投另计</span></div>
             <div className="allocation-grid">{budgetRows.map((item) => <BudgetBar key={item.name} name={item.name} used={item.used} limit={item.limit} tone={item.used > item.limit ? "rose" : "mint"} />)}</div>
           </article>
         </section>
@@ -948,7 +1024,7 @@ export default function FinanceApp() {
 
 function BudgetBar({ name, used, limit, tone }: { name: string; used: number; limit: number; tone: string }) {
   const percent = Math.max(0, Math.min(100, (used / Math.max(1, limit)) * 100));
-  return <div className="budget-row"><div className="budget-copy"><span>{name}</span><span className={used > limit ? "over" : ""}>¥{money(used)} / ¥{money(limit)}</span></div><div className={`progress-track ${tone}`}><span style={{ width: `${percent}%` }} /></div></div>;
+  return <div className="budget-row"><div className="budget-copy"><span>{name}</span><span className={used > limit ? "over" : ""}>¥{money(used)} / {limit > 0 ? `¥${money(limit)}` : "未设置"}</span></div><div className={`progress-track ${tone}`}><span style={{ width: `${percent}%` }} /></div></div>;
 }
 
 function TransactionList({ items }: { items: Transaction[] }) {
@@ -959,7 +1035,7 @@ function TransactionList({ items }: { items: Transaction[] }) {
 function TransactionRow({ item, onCategory }: { item: Transaction; onCategory: (category: Category) => void }) {
   const confidenceText = item.confidence === "low" ? " · 分类可信度低" : item.confidence === "medium" ? " · 分类可信度中" : "";
   const kindText = item.paymentKind === "investment" ? " · 储蓄投资/不计消费" : item.paymentKind === "transfer" ? " · 资金划转/不计预算" : item.paymentKind === "income" ? " · 收入/不计预算" : item.paymentKind === "refund" ? " · 退款" : "";
-  return <div className="transaction-row"><div className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{localDate(item.date)} · {item.source}{confidenceText}{kindText}{item.exceptional ? " · 一次性" : ""}{item.category === "预算外支出" ? " · 不计预算" : ""}</span></div><select value={item.category} onChange={(event) => onCategory(event.target.value as Category)} aria-label={`修改${item.merchant}的分类`}>{[...CATEGORY_LIMITS.map((entry) => entry.name), "预算外支出", "其他"].map((category) => <option key={category}>{category}</option>)}</select><b className={item.paymentKind === "investment" ? "investment" : item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.paymentKind === "investment" ? "存" : item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>;
+  return <div className="transaction-row"><div className={`source-dot ${item.source}`}>{item.source.slice(0, 1)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{localDate(item.date)} · {item.source}{confidenceText}{kindText}{item.exceptional ? " · 一次性" : ""}{item.category === "预算外支出" ? " · 不计预算" : ""}</span></div><select value={item.category} onChange={(event) => onCategory(event.target.value as Category)} aria-label={`修改${item.merchant}的分类`}>{[...CATEGORY_LIMITS.map((entry) => entry.name), "预算外支出"].map((category) => <option key={category}>{category}</option>)}</select><b className={item.paymentKind === "investment" ? "investment" : item.budgetExcluded ? "transfer" : item.direction === "refund" ? "refund" : ""}>{item.paymentKind === "investment" ? "存" : item.budgetExcluded ? "↔" : item.direction === "refund" ? "+" : "-"}¥{item.amount.toFixed(2)}</b></div>;
 }
 
 function SettingField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
