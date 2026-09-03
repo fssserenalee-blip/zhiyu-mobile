@@ -166,9 +166,10 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
 .personal-setup details { margin: 14px 0; }
 .personal-setup summary { cursor: pointer; font-size: 14px; }
 .personal-setup button { margin: 8px 8px 0 0; }
+.personal-plan-card details{margin:12px 0}.personal-plan-card summary{cursor:pointer;color:#7b6a43;font-weight:700}.plan-entry-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.plan-entry-actions .import-button{margin:0}.calculated-total{margin-bottom:4px;border:1px solid #e5d9b4;border-radius:12px;padding:12px;background:linear-gradient(135deg,#fffdf5,#f3f6f3)}#personal-plan-editor{scroll-margin-top:16px}
 .setup-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .setup-summary span { background: #f5f7f5; border-radius: 10px; padding: 10px; font-size: 12px; }
 .setup-summary b { display: block; margin-top: 5px; }
 .personal-plan-card > small { color: #717b79; }
 .data-status{display:grid;grid-template-columns:1fr auto;gap:7px 12px;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f1;font-size:11px}.data-status span{color:var(--muted)}.data-status b{color:#657b6a;font-weight:650}.data-status .needs-backup{color:#a56643}.button-stack button:disabled{cursor:wait;opacity:.58}
-@media(max-width:680px){.data-status{font-size:8px;gap:5px 8px;margin-top:10px;padding-top:8px}}
+@media(max-width:680px){.data-status{font-size:8px;gap:5px 8px;margin-top:10px;padding-top:8px}.plan-entry-actions{gap:6px;margin-top:8px}.plan-entry-actions button{padding:8px 11px;font-size:9px}.personal-plan-card details{margin:8px 0}.personal-plan-card summary{font-size:9px}}

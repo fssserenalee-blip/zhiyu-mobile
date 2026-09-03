@@ -422,6 +422,7 @@ export default function FinanceApp() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [plannedExpenses, setPlannedExpenses] = useState<PlannedExpense[]>(DEFAULT_PLANNED);
   const [planDraft, setPlanDraft] = useState({ title: "", amount: 0, dueDate: "", frequency: "yearly" as PlannedExpense["frequency"], category: "保险医疗" as Category });
+  const [editingPlanId, setEditingPlanId] = useState("");
   const [quickDraft, setQuickDraft] = useState({ amount: "", merchant: "", category: "食品水果与日用" as Category });
   const [tab, setTab] = useState<"dashboard" | "transactions" | "settings">("dashboard");
   const [selectedMonth, setSelectedMonth] = useState(() => cycleStartKey(new Date()));
@@ -436,6 +437,7 @@ export default function FinanceApp() {
   const setupInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const quickAmountRef = useRef<HTMLInputElement>(null);
+  const budgetEditorRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -920,7 +922,7 @@ export default function FinanceApp() {
       return;
     }
     const item: PlannedExpense = {
-      id: `planned-${Date.now()}`,
+      id: editingPlanId || `planned-${Date.now()}`,
       title: planDraft.title.trim(),
       amount: planDraft.amount,
       dueDate: planDraft.dueDate,
@@ -928,11 +930,34 @@ export default function FinanceApp() {
       category: planDraft.category,
       kind: planDraft.category === "定投储蓄" ? "investment" : "expense",
       active: true,
-      paidOccurrences: [],
+      paidOccurrences: editingPlanId ? (plannedExpenses.find((entry) => entry.id === editingPlanId)?.paidOccurrences ?? []) : [],
     };
-    setPlannedExpenses((current) => [...current, item]);
+    setPlannedExpenses((current) => editingPlanId
+      ? current.map((entry) => entry.id === editingPlanId ? { ...item, active: entry.active } : entry)
+      : [...current, item]);
     setPlanDraft({ title: "", amount: 0, dueDate: "", frequency: "yearly", category: "保险医疗" });
-    setFlash(`已安排“${item.title}”，到期前会在总览提醒`);
+    setEditingPlanId("");
+    setFlash(editingPlanId ? `已更新“${item.title}”` : `已安排“${item.title}”，到期前会在总览提醒`);
+  };
+
+  const editPlannedExpense = (item: PlannedExpense) => {
+    setEditingPlanId(item.id);
+    setPlanDraft({ title: item.title, amount: item.amount, dueDate: item.dueDate, frequency: item.frequency, category: item.category });
+    window.setTimeout(() => document.querySelector(".plan-form")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
+
+  const updateBudgetCategory = (category: Category, value: number) => {
+    const next: Settings = category === "食品水果与日用"
+      ? { ...settings, foodLimit: value }
+      : category === "自由消费"
+        ? { ...settings, freeLimit: value }
+        : { ...settings, categoryLimits: { ...settings.categoryLimits, [category]: value } };
+    const categoryLimits = next.categoryLimits ?? {};
+    next.monthlyBudget = Math.round((next.foodLimit + next.freeLimit
+      + (categoryLimits["孩子"] ?? 0)
+      + (categoryLimits["水电物业通讯"] ?? 0)
+      + (categoryLimits["其他"] ?? 0)) * 100) / 100;
+    setSettings(next);
   };
 
   const markPlannedPaid = (item: PlannedExpense, occurrence: string) => {
@@ -1122,25 +1147,28 @@ export default function FinanceApp() {
         <section className="settings-grid">
           <article className="workspace-panel full-width personal-plan-card">
             <p className="eyebrow">个人计划 · 仅保存在本机</p><h2>{appliedSetupId ? "个人计划已启用" : "启用你的个人计划"}</h2>
-            <p className="settings-intro">使用专用链接确认一次即可；也可导入私人的计划文件。原有流水会保留，重复打开同一计划不会重复添加。</p>
-            <button className="secondary-button" onClick={() => setupInput.current?.click()}>导入个人计划</button>
-            <ul>{settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
+            <p className="settings-intro">这是试行计划，可以随时根据实际流水调整或收紧，不需要重新制作计划文件；修改后会自动保存。</p>
+            <div className="plan-entry-actions"><button className="import-button" onClick={() => budgetEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>调整个人计划</button><button className="secondary-button" onClick={() => setupInput.current?.click()}>重新导入计划</button></div>
+            {settings.budgetNotes?.length ? <details><summary>查看初始计划说明</summary><ul>{settings.budgetNotes.map(note => <li key={note}>{note}</li>)}</ul></details> : null}
             {settings.billCategories?.length ? <p>本期日常额度 ¥{money(settings.monthlyBudget)} ＋ 单列账单计划 ¥{money(plannedBillsForCycle)}；单列账单已记 ¥{money(separateBillsSpent)}。定投另计。</p> : null}
-            <small>版本：自然月双存储修复版 2026.09.03</small>
+            <small>版本：试行计划可调整版 2026.09.03</small>
           </article>
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
             <div className="planned-workspace">
-              <div className="planned-list">{upcomingExpenses.length ? upcomingExpenses.map(({ item, nextDate, days }) => <div className="planned-row" key={item.id}><div className="planned-date"><strong>{nextDate.slice(5).replace("-", "/")}</strong><small>{days === 0 ? "今天" : `${days}天后`}</small></div><div className="planned-main"><strong>{item.title}</strong><small>{item.category} · {frequencyLabel(item.frequency)}</small></div><b>¥{money(item.amount)}</b><div className="planned-actions"><button onClick={() => markPlannedPaid(item, nextDate)}>{item.kind === "investment" || item.category === "定投储蓄" ? "确认定投" : "本期已付"}</button><button className="delete-plan" onClick={() => setPlannedExpenses((current) => current.filter((entry) => entry.id !== item.id))}>删除</button></div></div>) : <div className="empty-state large-empty">还没有未来固定支出。</div>}</div>
-              <div className="plan-form"><h3>添加固定支出或定投</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option><option value="quarterly">每季度</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><button className="import-button" onClick={addPlannedExpense}>添加并开启提醒</button></div>
+              <div className="planned-list">{upcomingExpenses.length ? upcomingExpenses.map(({ item, nextDate, days }) => <div className="planned-row" key={item.id}><div className="planned-date"><strong>{nextDate.slice(5).replace("-", "/")}</strong><small>{days === 0 ? "今天" : `${days}天后`}</small></div><div className="planned-main"><strong>{item.title}</strong><small>{item.category} · {frequencyLabel(item.frequency)}</small></div><b>¥{money(item.amount)}</b><div className="planned-actions"><button onClick={() => markPlannedPaid(item, nextDate)}>{item.kind === "investment" || item.category === "定投储蓄" ? "确认定投" : "本期已付"}</button><button onClick={() => editPlannedExpense(item)}>修改</button><button className="delete-plan" onClick={() => setPlannedExpenses((current) => current.filter((entry) => entry.id !== item.id))}>删除</button></div></div>) : <div className="empty-state large-empty">还没有未来固定支出。</div>}</div>
+              <div className="plan-form"><h3>{editingPlanId ? "修改计划项目" : "添加固定支出或定投"}</h3><label><span>名称</span><input value={planDraft.title} placeholder="例如：年度保险" onChange={(event) => setPlanDraft({ ...planDraft, title: event.target.value })} /></label><div className="plan-form-pair"><label><span>金额</span><input type="number" min="0" value={planDraft.amount || ""} placeholder="0" onChange={(event) => setPlanDraft({ ...planDraft, amount: Number(event.target.value) })} /></label><label><span>首次扣款日期</span><input type="date" value={planDraft.dueDate} onChange={(event) => setPlanDraft({ ...planDraft, dueDate: event.target.value })} /></label></div><div className="plan-form-pair"><label><span>重复方式</span><select value={planDraft.frequency} onChange={(event) => setPlanDraft({ ...planDraft, frequency: event.target.value as PlannedExpense["frequency"] })}><option value="once">仅一次</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option><option value="quarterly">每季度</option><option value="yearly">每年</option></select></label><label><span>分类</span><select value={planDraft.category} onChange={(event) => setPlanDraft({ ...planDraft, category: event.target.value as Category })}>{CATEGORY_LIMITS.map((entry) => <option key={entry.name}>{entry.name}</option>)}</select></label></div><div className="plan-entry-actions"><button className="import-button" onClick={addPlannedExpense}>{editingPlanId ? "保存修改" : "添加并开启提醒"}</button>{editingPlanId ? <button className="secondary-button" onClick={() => { setEditingPlanId(""); setPlanDraft({ title: "", amount: 0, dueDate: "", frequency: "yearly", category: "保险医疗" }); }}>取消修改</button> : null}</div></div>
             </div>
           </article>
-          <article className="workspace-panel">
-            <p className="eyebrow">支出与储蓄计划</p><h1>你的财务边界</h1><p className="settings-intro">先设置由你管理的支出范围、分类额度与储蓄目标；所有设置只保存在当前设备。</p>
+          <article ref={budgetEditorRef} className="workspace-panel" id="personal-plan-editor">
+            <p className="eyebrow">调整个人计划</p><h1>你的财务边界</h1><p className="settings-intro">建议先试行两至三个月，再根据真实平均支出调整。修改任一分类后，月度总上限会自动重新计算并保存。</p>
             <div className="setting-list">
-              <SettingField label="日常每期支出上限（单列账单另计）" value={settings.monthlyBudget} onChange={(value) => setSettings({ ...settings, monthlyBudget: value })} />
-              <SettingField label="食品水果与日用" value={settings.foodLimit} onChange={(value) => setSettings({ ...settings, foodLimit: value })} />
-              <SettingField label="自由消费" value={settings.freeLimit} onChange={(value) => setSettings({ ...settings, freeLimit: value })} />
+              <div className="setting-field calculated-total"><span>日常月度总上限</span><strong>¥{money(settings.monthlyBudget)}</strong></div>
+              <SettingField label="食品水果与日用" value={settings.foodLimit} onChange={(value) => updateBudgetCategory("食品水果与日用", value)} />
+              <SettingField label="孩子日常支出" value={settings.categoryLimits?.["孩子"] ?? 0} onChange={(value) => updateBudgetCategory("孩子", value)} />
+              <SettingField label="水电物业通讯" value={settings.categoryLimits?.["水电物业通讯"] ?? 0} onChange={(value) => updateBudgetCategory("水电物业通讯", value)} />
+              <SettingField label="自由消费" value={settings.freeLimit} onChange={(value) => updateBudgetCategory("自由消费", value)} />
+              <SettingField label="其他／待发现支出" value={settings.categoryLimits?.["其他"] ?? 0} onChange={(value) => updateBudgetCategory("其他", value)} />
               <SettingField label="非必要网购子额度" value={settings.onlineLimit} onChange={(value) => setSettings({ ...settings, onlineLimit: value })} />
               <div className="setting-field"><span>按计划折算定投月均</span><strong>¥{money(monthlyInvestmentAverage)}</strong></div>
               <SettingField label="生活资金池目标（非实际余额）" value={settings.reserveFund} onChange={(value) => setSettings({ ...settings, reserveFund: value })} />
