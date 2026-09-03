@@ -444,12 +444,35 @@ export default function FinanceApp() {
         const stored = await loadPersistentState();
         if (cancelled) return;
         if (stored) {
+          const compatibilitySetupId = localStorage.getItem(PERSONAL_SETUP_KEY) ?? "";
+          const compatibilitySettings = localStorage.getItem(SETTINGS_KEY);
+          const compatibilityPlans = localStorage.getItem(PLANNED_KEY);
+          const recoverCompatibilityPlan = compatibilitySetupId
+            && compatibilitySetupId !== (stored.appliedSetupId ?? "")
+            && compatibilitySettings
+            && compatibilityPlans;
+          const recoveredSettings = recoverCompatibilityPlan ? normalizeSettings(JSON.parse(compatibilitySettings)) : normalizeSettings(stored.settings);
+          const recoveredPlans = recoverCompatibilityPlan
+            ? mergeSetupPlans(stored.plannedExpenses ?? [], JSON.parse(compatibilityPlans))
+            : (stored.plannedExpenses ?? []);
+          const recoveredSetupId = recoverCompatibilityPlan ? compatibilitySetupId : (stored.appliedSetupId ?? "");
           setTransactions(stored.transactions ?? []);
-          setSettings(normalizeSettings(stored.settings));
-          setPlannedExpenses(stored.plannedExpenses ?? []);
-          setAppliedSetupId(stored.appliedSetupId ?? "");
+          setSettings(recoveredSettings);
+          setPlannedExpenses(recoveredPlans);
+          setAppliedSetupId(recoveredSetupId);
           setLastBackupAt(stored.lastBackupAt ?? "");
           setLastSavedAt(stored.savedAt ?? "");
+          if (recoverCompatibilityPlan) {
+            const recoveredState: PersistedAppState = {
+              ...stored,
+              savedAt: new Date().toISOString(),
+              settings: recoveredSettings,
+              plannedExpenses: recoveredPlans,
+              appliedSetupId: recoveredSetupId,
+            };
+            await savePersistentState(recoveredState);
+            setFlash("已自动找回之前保存的个人计划");
+          }
         } else {
           // One-time migration from the former Safari localStorage version.
           const saved = localStorage.getItem(STORAGE_KEY);
@@ -543,21 +566,38 @@ export default function FinanceApp() {
     } finally { event.target.value = ""; }
   };
 
-  const applyPersonalSetup = () => {
+  const applyPersonalSetup = async () => {
     if (!pendingSetup || pendingSetup.id === appliedSetupId) return;
     const mergedPlans = mergeSetupPlans(plannedExpenses, pendingSetup.plannedExpenses);
+    const savedAt = new Date().toISOString();
+    const nextState: PersistedAppState = {
+      schemaVersion: 1,
+      savedAt,
+      lastBackupAt: lastBackupAt || undefined,
+      appliedSetupId: pendingSetup.id,
+      transactions,
+      settings: pendingSetup.settings,
+      plannedExpenses: mergedPlans,
+    };
     try {
+      setBusy(true);
       localStorage.setItem("zhiyu-before-personal-setup", JSON.stringify({ settings, plannedExpenses }));
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(pendingSetup.settings));
       localStorage.setItem(PLANNED_KEY, JSON.stringify(mergedPlans));
       localStorage.setItem(PERSONAL_SETUP_KEY, pendingSetup.id);
+      await savePersistentState(nextState);
+      const verified = await verifyPersistentState(nextState);
+      if (!verified.ok) throw new Error(verified.message);
       setSettings(pendingSetup.settings);
       setPlannedExpenses(mergedPlans);
       setAppliedSetupId(pendingSetup.id);
+      setLastSavedAt(savedAt);
       setPendingSetup(null);
       setTab("dashboard");
-      setFlash("个人计划已保存到本机，原有流水及已付记录保留。");
-    } catch { setFlash("本机保存失败，请检查Safari存储空间；请勿清除已有网站数据。"); }
+      setFlash("个人计划已写入并校验成功，可以安全关闭知余。");
+    } catch (error) {
+      setFlash(error instanceof Error ? `计划保存未完成：${error.message}` : "计划保存未完成，请不要关闭知余");
+    } finally { setBusy(false); }
   };
 
   useEffect(() => {
@@ -981,7 +1021,7 @@ export default function FinanceApp() {
         <ul>{pendingSetup.settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
         <details><summary>核对 {pendingSetup.plannedExpenses.length} 项固定支出与定投</summary><ul>{pendingSetup.plannedExpenses.map(item => <li key={item.id}>{item.title} · ¥{money(item.amount)} · {item.dueDate}起 · {frequencyLabel(item.frequency)}</li>)}</ul></details>
         <p className="fine-print">保存只更新计划，不增加已付账单，不删除原有流水。专用链接包含你的计划，请勿转发；金额不会随网址请求发送给网站服务器。</p>
-        {pendingSetup.id === appliedSetupId ? <p role="status">此计划已保存，不会重复添加或覆盖你的后续调整。</p> : <button className="import-button" onClick={applyPersonalSetup}>保存到本机</button>}
+        {pendingSetup.id === appliedSetupId ? <p role="status">此计划已保存，不会重复添加或覆盖你的后续调整。</p> : <button className="import-button" onClick={applyPersonalSetup} disabled={busy}>{busy ? "正在写入并校验…" : "保存到本机"}</button>}
         <button className="secondary-button" onClick={() => setPendingSetup(null)}>{pendingSetup.id === appliedSetupId ? "关闭" : "暂不更改"}</button>
       </section>}
 
@@ -1073,7 +1113,7 @@ export default function FinanceApp() {
             <button className="secondary-button" onClick={() => setupInput.current?.click()}>导入个人计划</button>
             <ul>{settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
             {settings.billCategories?.length ? <p>本期日常额度 ¥{money(settings.monthlyBudget)} ＋ 单列账单计划 ¥{money(plannedBillsForCycle)}；单列账单已记 ¥{money(separateBillsSpent)}。定投另计。</p> : null}
-            <small>版本：离线保护版 2026.09.03</small>
+            <small>版本：自然月持久化修复版 2026.09.03</small>
           </article>
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
