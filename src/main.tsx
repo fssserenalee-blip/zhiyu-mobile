@@ -8,3 +8,11 @@ createRoot(document.getElementById("root")!).render(
     <FinanceApp />
   </StrictMode>,
 );
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {
+      // The app remains usable online if a browser refuses offline caching.
+    });
+  });
+}

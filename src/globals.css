@@ -170,3 +170,5 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
 .setup-summary span { background: #f5f7f5; border-radius: 10px; padding: 10px; font-size: 12px; }
 .setup-summary b { display: block; margin-top: 5px; }
 .personal-plan-card > small { color: #717b79; }
+.data-status{display:grid;grid-template-columns:1fr auto;gap:7px 12px;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f1;font-size:11px}.data-status span{color:var(--muted)}.data-status b{color:#657b6a;font-weight:650}.data-status .needs-backup{color:#a56643}.button-stack button:disabled{cursor:wait;opacity:.58}
+@media(max-width:680px){.data-status{font-size:8px;gap:5px 8px;margin-top:10px;padding-top:8px}}

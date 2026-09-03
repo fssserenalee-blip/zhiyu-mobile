@@ -3,6 +3,7 @@
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { decodePersonalSetup, mergeSetupPlans, parsePersonalSetup, type PersonalSetup } from "./personal-plan";
+import { loadPersistentState, requestDurableStorage, savePersistentState, verifyPersistentState, type PersistedAppState, type StorageHealth } from "./persistence";
 
 type Direction = "expense" | "refund";
 export type Category =
@@ -19,7 +20,7 @@ export type Category =
   | "定投储蓄"
   | "其他";
 
-type Transaction = {
+export type Transaction = {
   id: string;
   date: string;
   amount: number;
@@ -251,7 +252,8 @@ function parseSms(text: string): Transaction | null {
   const isInvestment = !isRefund && !isIncome && !isTransfer && classified.category === "定投储蓄";
   const category = isTransfer || isIncome ? "其他" : classified.category;
   const paymentKind = isRefund ? "refund" : isIncome ? "income" : isTransfer ? "transfer" : isInvestment ? "investment" : "purchase";
-  const date = new Date().toISOString();
+  const timestamp = text.match(/(20\d{2}[/-]\d{1,2}[/-]\d{1,2}(?:\s+|T)\d{1,2}:\d{2}(?::\d{2})?)/)?.[1];
+  const date = timestamp ? normalizeDate(timestamp) : new Date().toISOString();
   return {
     id: makeId(["短信", date.slice(0, 16), amount, text.slice(0, 36)]),
     date,
@@ -267,6 +269,14 @@ function parseSms(text: string): Transaction | null {
     paymentKind,
     budgetExcluded: isTransfer || isIncome || isInvestment,
   };
+}
+
+async function parseShortcutLog(file: File): Promise<Transaction[]> {
+  const lines = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.flatMap((line) => {
+    const transaction = parseSms(line);
+    return transaction ? [{ ...transaction, source: "iCloud快捷指令" }] : [];
+  });
 }
 
 function matchInvestmentPlan(transaction: Transaction, plans: PlannedExpense[]) {
@@ -399,6 +409,7 @@ async function parseFile(file: File): Promise<{ transactions: Transaction[]; set
   if (name.endsWith(".csv")) return { transactions: await parseCsv(file) };
   if (name.endsWith(".xlsx") || name.endsWith(".xls")) return { transactions: await parseXlsx(file) };
   if (name.endsWith(".pdf")) return { transactions: await parsePdf(file) };
+  if (name.endsWith(".txt")) return { transactions: await parseShortcutLog(file) };
   if (name.endsWith(".json")) {
     const data = JSON.parse(await file.text());
     return { transactions: data.transactions ?? [], settings: data.settings, plannedExpenses: data.plannedExpenses };
@@ -419,45 +430,85 @@ export default function FinanceApp() {
   const [flash, setFlash] = useState("");
   const [pendingSetup, setPendingSetup] = useState<PersonalSetup | null>(null);
   const [appliedSetupId, setAppliedSetupId] = useState("");
+  const [lastBackupAt, setLastBackupAt] = useState("");
+  const [lastSavedAt, setLastSavedAt] = useState("");
+  const [storageHealth, setStorageHealth] = useState<StorageHealth>({ available: true, persistent: false });
   const setupInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const quickAmountRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    const savedSettings = localStorage.getItem(SETTINGS_KEY);
-    const savedPlanned = localStorage.getItem(PLANNED_KEY);
-    setAppliedSetupId(localStorage.getItem(PERSONAL_SETUP_KEY) ?? "");
-    if (savedSettings) setSettings(normalizeSettings(JSON.parse(savedSettings)));
-    else {
-      setTab("settings");
-      setFlash("首次使用：请先填写你的预算与储蓄计划");
-    }
-    const storedPlans: PlannedExpense[] = savedPlanned ? JSON.parse(savedPlanned) : [];
-    setPlannedExpenses(storedPlans);
-    if (saved) {
-      setTransactions(JSON.parse(saved));
-      setReady(true);
-      return;
-    }
-    setTransactions([]);
-    setReady(true);
+    let cancelled = false;
+    const initialize = async () => {
+      try {
+        const stored = await loadPersistentState();
+        if (cancelled) return;
+        if (stored) {
+          setTransactions(stored.transactions ?? []);
+          setSettings(normalizeSettings(stored.settings));
+          setPlannedExpenses(stored.plannedExpenses ?? []);
+          setAppliedSetupId(stored.appliedSetupId ?? "");
+          setLastBackupAt(stored.lastBackupAt ?? "");
+          setLastSavedAt(stored.savedAt ?? "");
+        } else {
+          // One-time migration from the former Safari localStorage version.
+          const saved = localStorage.getItem(STORAGE_KEY);
+          const savedSettings = localStorage.getItem(SETTINGS_KEY);
+          const savedPlanned = localStorage.getItem(PLANNED_KEY);
+          setAppliedSetupId(localStorage.getItem(PERSONAL_SETUP_KEY) ?? "");
+          setTransactions(saved ? JSON.parse(saved) : []);
+          setPlannedExpenses(savedPlanned ? JSON.parse(savedPlanned) : []);
+          if (savedSettings) setSettings(normalizeSettings(JSON.parse(savedSettings)));
+          else {
+            setTab("settings");
+            setFlash("首次使用：请先填写你的预算与储蓄计划");
+          }
+        }
+      } catch {
+        // Keep a compatibility fallback for browsers that block IndexedDB.
+        const saved = localStorage.getItem(STORAGE_KEY);
+        const savedSettings = localStorage.getItem(SETTINGS_KEY);
+        const savedPlanned = localStorage.getItem(PLANNED_KEY);
+        setTransactions(saved ? JSON.parse(saved) : []);
+        setSettings(savedSettings ? normalizeSettings(JSON.parse(savedSettings)) : DEFAULT_SETTINGS);
+        setPlannedExpenses(savedPlanned ? JSON.parse(savedPlanned) : []);
+        setFlash("本机数据库暂不可用，当前使用兼容存储；请尽快备份到iCloud");
+      } finally {
+        if (!cancelled) {
+          setStorageHealth(await requestDurableStorage());
+          setReady(true);
+        }
+      }
+    };
+    initialize();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
-  }, [transactions, ready]);
-
-  useEffect(() => {
-    if (!ready) return;
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }, [settings, ready]);
-
-  useEffect(() => {
-    if (!ready) return;
-    localStorage.setItem(PLANNED_KEY, JSON.stringify(plannedExpenses));
-  }, [plannedExpenses, ready]);
+    const timer = window.setTimeout(() => {
+      const savedAt = new Date().toISOString();
+      const snapshot: PersistedAppState = {
+        schemaVersion: 1,
+        savedAt,
+        lastBackupAt: lastBackupAt || undefined,
+        appliedSetupId,
+        transactions,
+        settings,
+        plannedExpenses,
+      };
+      savePersistentState(snapshot)
+        .then(() => setLastSavedAt(savedAt))
+        .catch(() => {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+          localStorage.setItem(PLANNED_KEY, JSON.stringify(plannedExpenses));
+          localStorage.setItem(PERSONAL_SETUP_KEY, appliedSetupId);
+          setFlash("本机数据库保存失败，已使用兼容存储；请立即备份到iCloud");
+        });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [transactions, settings, plannedExpenses, appliedSetupId, lastBackupAt, ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -511,73 +562,76 @@ export default function FinanceApp() {
 
   useEffect(() => {
     if (!ready) return;
-    // Shortcut payloads use the URL fragment so financial SMS text stays on the
-    // phone and is never sent to the static hosting server as part of the request.
-    const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
-    const params = new URLSearchParams(fragment || window.location.search);
-    const quickMode = params.get("quick") === "1";
-    const sms = params.get("sms");
-    const shortcutText = params.get("text");
-    const shortcutAmount = parseAmount(params.get("amount") ?? "");
-    const shortcutMerchant = (params.get("merchant") ?? "快捷指令记账").trim();
-    const requestedCategory = params.get("category") as Category | null;
-    const shortcutCategory = requestedCategory && [...QUICK_CATEGORIES, ...CATEGORY_LIMITS.map((item) => item.name)].includes(requestedCategory)
-      ? requestedCategory
-      : autoCategory(shortcutMerchant, "iPhone快捷指令").category;
-    const parsedRaw = sms || shortcutText ? parseSms(sms ?? shortcutText ?? "") : null;
-    const matchedPlan = parsedRaw ? matchInvestmentPlan(parsedRaw, plannedExpenses) : null;
-    const parsed = parsedRaw && matchedPlan ? {
-      ...parsedRaw,
-      merchant: matchedPlan.title,
-      category: "定投储蓄" as Category,
-      paymentKind: "investment" as const,
-      budgetExcluded: true,
-      investmentPlanId: matchedPlan.id,
-      provisional: false,
-      confidence: "high" as const,
-    } : parsedRaw;
-    if (quickMode) {
-      setTab("dashboard");
-      window.setTimeout(() => {
-        quickAmountRef.current?.focus();
-        quickAmountRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 250);
-    }
-    if (parsed) {
-      setTransactions((current) => dedupe([parsed, ...current]));
-      if (matchedPlan) {
-        const occurrence = dateKey(new Date(parsed.date));
-        setPlannedExpenses((current) => current.map((item) => item.id === matchedPlan.id ? { ...item, paidOccurrences: Array.from(new Set([...item.paidOccurrences, occurrence])) } : item));
-      }
-      setFlash(matchedPlan
-        ? `已自动完成“${matchedPlan.title}” ¥${parsed.amount.toFixed(2)}，计入储蓄投资`
-        : `已自动记录 ¥${parsed.amount.toFixed(2)}，分类为“${parsed.category}”`);
-    } else if (Number.isFinite(shortcutAmount) && shortcutAmount > 0) {
-      const date = new Date().toISOString();
-      const item: Transaction = {
-        id: makeId(["快捷指令", date, shortcutAmount, shortcutMerchant]),
-        date,
-        amount: shortcutAmount,
-        direction: "expense",
-        merchant: shortcutMerchant || "快捷指令记账",
-        source: "iPhone快捷指令",
-        category: shortcutCategory,
-        online: false,
+    const readShortcutPayload = () => {
+      // Shortcut payloads use the URL fragment so financial SMS text stays on the
+      // phone and is never sent to the static hosting server as part of the request.
+      const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+      const params = new URLSearchParams(fragment || window.location.search);
+      const quickMode = params.get("quick") === "1";
+      const sms = params.get("sms");
+      const shortcutText = params.get("text");
+      const shortcutAmount = parseAmount(params.get("amount") ?? "");
+      const shortcutMerchant = (params.get("merchant") ?? "快捷指令记账").trim();
+      const requestedCategory = params.get("category") as Category | null;
+      const shortcutCategory = requestedCategory && [...QUICK_CATEGORIES, ...CATEGORY_LIMITS.map((item) => item.name)].includes(requestedCategory)
+        ? requestedCategory
+        : autoCategory(shortcutMerchant, "iPhone快捷指令").category;
+      const parsedRaw = sms || shortcutText ? parseSms(sms ?? shortcutText ?? "") : null;
+      const matchedPlan = parsedRaw ? matchInvestmentPlan(parsedRaw, plannedExpenses) : null;
+      const parsed = parsedRaw && matchedPlan ? {
+        ...parsedRaw,
+        merchant: matchedPlan.title,
+        category: "定投储蓄" as Category,
+        paymentKind: "investment" as const,
+        budgetExcluded: true,
+        investmentPlanId: matchedPlan.id,
         provisional: false,
-        exceptional: false,
-        confidence: "high",
-        paymentKind: shortcutCategory === "定投储蓄" ? "investment" : "purchase",
-        budgetExcluded: shortcutCategory === "定投储蓄",
-      };
-      setTransactions((current) => dedupe([item, ...current]));
-      setFlash(`快捷指令已记录 ¥${item.amount.toFixed(2)} · ${item.category}`);
-    } else if (sms || shortcutText) {
-      setFlash("收到短信，但没有识别出消费金额");
-    } else if (!quickMode) {
-      return;
-    }
-    window.history.replaceState({}, "", window.location.pathname);
-  }, [ready]);
+        confidence: "high" as const,
+      } : parsedRaw;
+      if (quickMode) {
+        setTab("dashboard");
+        window.setTimeout(() => {
+          quickAmountRef.current?.focus();
+          quickAmountRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 250);
+      }
+      if (parsed) {
+        setTransactions((current) => dedupe([parsed, ...current]));
+        if (matchedPlan) {
+          const occurrence = dateKey(new Date(parsed.date));
+          setPlannedExpenses((current) => current.map((item) => item.id === matchedPlan.id ? { ...item, paidOccurrences: Array.from(new Set([...item.paidOccurrences, occurrence])) } : item));
+        }
+        setFlash(matchedPlan
+          ? `已自动完成“${matchedPlan.title}” ¥${parsed.amount.toFixed(2)}，计入储蓄投资`
+          : `已自动记录 ¥${parsed.amount.toFixed(2)}，分类为“${parsed.category}”`);
+      } else if (Number.isFinite(shortcutAmount) && shortcutAmount > 0) {
+        const date = new Date().toISOString();
+        const item: Transaction = {
+          id: makeId(["快捷指令", date, shortcutAmount, shortcutMerchant]),
+          date,
+          amount: shortcutAmount,
+          direction: "expense",
+          merchant: shortcutMerchant || "快捷指令记账",
+          source: "iPhone快捷指令",
+          category: shortcutCategory,
+          online: false,
+          provisional: false,
+          exceptional: false,
+          confidence: "high",
+          paymentKind: shortcutCategory === "定投储蓄" ? "investment" : "purchase",
+          budgetExcluded: shortcutCategory === "定投储蓄",
+        };
+        setTransactions((current) => dedupe([item, ...current]));
+        setFlash(`快捷指令已记录 ¥${item.amount.toFixed(2)} · ${item.category}`);
+      } else if (sms || shortcutText) {
+        setFlash("收到短信，但没有识别出消费金额");
+      } else if (!quickMode) return;
+      window.history.replaceState({}, "", window.location.pathname);
+    };
+    readShortcutPayload();
+    window.addEventListener("hashchange", readShortcutPayload);
+    return () => window.removeEventListener("hashchange", readShortcutPayload);
+  }, [ready, plannedExpenses]);
 
   useEffect(() => {
     if (!flash) return;
@@ -677,6 +731,8 @@ export default function FinanceApp() {
   const in90DaysKey = dateKey(new Date(dayStart(new Date()).getTime() + 90 * 86400000));
   const dueWithin30Days = plannedExpenses.reduce((sum, item) => sum + occurrenceDatesInRange(item, todayKey, in30DaysKey, false).length * item.amount, 0);
   const dueWithin90Days = plannedExpenses.reduce((sum, item) => sum + occurrenceDatesInRange(item, todayKey, in90DaysKey, false).length * item.amount, 0);
+  const backupAgeDays = lastBackupAt ? Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000) : null;
+  const backupLabel = backupAgeDays === null ? "尚未备份" : backupAgeDays <= 0 ? "今天已备份" : `${backupAgeDays}天前备份`;
 
   useEffect(() => {
     if (!ready || !nextPlanned || nextPlanned.days > 30 || !("Notification" in window) || Notification.permission !== "granted") return;
@@ -740,14 +796,51 @@ export default function FinanceApp() {
     }
   };
 
-  const exportBackup = () => {
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), settings, transactions, plannedExpenses }, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `知余财务备份-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    setFlash("备份文件已生成，可存入 iCloud Drive");
+  const currentSnapshot = (savedAt = new Date().toISOString()): PersistedAppState => ({
+    schemaVersion: 1,
+    savedAt,
+    lastBackupAt: lastBackupAt || undefined,
+    appliedSetupId,
+    settings,
+    transactions,
+    plannedExpenses,
+  });
+
+  const exportBackup = async () => {
+    const exportedAt = new Date().toISOString();
+    const backup = { ...currentSnapshot(exportedAt), exportedAt, lastBackupAt: exportedAt };
+    const fileName = `知余财务备份-${exportedAt.slice(0, 10)}.json`;
+    const file = new File([JSON.stringify(backup, null, 2)], fileName, { type: "application/json" });
+    try {
+      const isAppleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isAppleMobile && navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: "知余财务备份", text: "请选择“存储到文件”，保存到iCloud Drive的知余文件夹。" });
+      } else {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(file);
+        link.download = fileName;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      }
+      setLastBackupAt(exportedAt);
+      setFlash("备份已生成；请确认已存入iCloud Drive的“知余”文件夹");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setFlash("备份尚未保存：你关闭了分享窗口");
+      } else setFlash("备份生成失败，请稍后再试");
+    }
+  };
+
+  const checkDataIntegrity = async () => {
+    setBusy(true);
+    try {
+      const result = await verifyPersistentState(currentSnapshot());
+      setFlash(result.message);
+    } catch {
+      setFlash("本机数据库检查失败，请立即备份到iCloud");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const enableNotifications = async () => {
@@ -878,7 +971,7 @@ export default function FinanceApp() {
   return (
     <main className="app-shell">
       {flash && <div className="toast" role="status">{flash}</div>}
-      <input ref={fileInput} className="hidden-input" type="file" multiple accept=".csv,.xlsx,.xls,.pdf,.json" onChange={handleFiles} />
+      <input ref={fileInput} className="hidden-input" type="file" multiple accept=".csv,.xlsx,.xls,.pdf,.json,.txt,text/plain" onChange={handleFiles} />
       <input ref={setupInput} className="hidden-input" type="file" accept=".json,application/json" onChange={readSetupFile} />
 
       {pendingSetup && <section className="personal-setup workspace-panel" aria-label="确认个人计划">
@@ -980,7 +1073,7 @@ export default function FinanceApp() {
             <button className="secondary-button" onClick={() => setupInput.current?.click()}>导入个人计划</button>
             <ul>{settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
             {settings.billCategories?.length ? <p>本期日常额度 ¥{money(settings.monthlyBudget)} ＋ 单列账单计划 ¥{money(plannedBillsForCycle)}；单列账单已记 ¥{money(separateBillsSpent)}。定投另计。</p> : null}
-            <small>版本：本机计划 2026.08.28</small>
+            <small>版本：离线保护版 2026.09.03</small>
           </article>
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
@@ -1002,9 +1095,9 @@ export default function FinanceApp() {
           </article>
 
           <aside className="settings-stack">
-            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信自动化请使用 <code>/#sms=编码后的短信内容</code>，内容只在手机本地交给知余识别。</li></ol><p className="fine-print">记账周期固定为每月21日至次月20日；21日生成上期总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
-            <article className="panel data-card"><p className="eyebrow">本机独立使用</p><h2>数据只保存在这部手机</h2><p className="fine-print">不连接电脑，也不会实时同步。建议每月总结后导出一次备份并存入 iCloud Drive；清除 Safari 网站数据或更换手机前务必先备份。</p></article>
-            <article className="panel data-card"><p className="eyebrow">数据与提醒</p><div className="button-stack"><button className="secondary-button" onClick={enableNotifications}>开启系统提醒</button><button className="secondary-button" onClick={exportBackup}>备份到 iCloud Drive</button><button className="danger-button" onClick={resetData}>清空本机数据</button></div></article>
+            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信自动化请使用 <code>/#sms=编码后的短信内容</code>，内容只在手机本地交给知余识别。</li><li>在短信快捷指令中把“当前日期｜短信内容”追加到 <code>iCloud Drive/Shortcuts/知余/短信流水.txt</code>；这个文件可直接在“从iCloud恢复”中导入。</li></ol><p className="fine-print">记账周期固定为每月21日至次月20日；21日生成上期总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
+            <article className="panel data-card"><p className="eyebrow">本机数据库与离线使用</p><h2>{storageHealth.persistent ? "已申请持久保存" : "已启用本机数据库"}</h2><p className="fine-print">流水已改用IndexedDB，并保留最近30个本地日快照；桌面版知余成功打开一次后可离线启动。iOS仍可能在清除网站数据、删除知余或空间不足时移除全部本地内容，所以iCloud备份仍是最终保障。</p><div className="data-status"><span>最近写入</span><b>{lastSavedAt ? new Date(lastSavedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "准备中"}</b><span>独立备份</span><b className={backupAgeDays === null || backupAgeDays > 7 ? "needs-backup" : ""}>{backupLabel}</b></div></article>
+            <article className="panel data-card"><p className="eyebrow">备份、恢复与检查</p><div className="button-stack"><button className="secondary-button" onClick={enableNotifications}>开启系统提醒</button><button className="secondary-button" onClick={exportBackup}>备份到iCloud Drive</button><button className="secondary-button" onClick={() => fileInput.current?.click()}>从iCloud恢复</button><button className="secondary-button" onClick={checkDataIntegrity} disabled={busy}>{busy ? "正在检查…" : "检查数据完整性"}</button><button className="danger-button" onClick={resetData}>清空本机数据</button></div><p className="fine-print">在iPhone分享窗口选择“存储到文件”→“iCloud Drive”→“知余”。建议每周备份一次，每月21日再保留一份月度副本。</p></article>
           </aside>
 
           <article className="workspace-panel full-width">
