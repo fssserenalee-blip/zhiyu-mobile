@@ -1,4 +1,4 @@
-const CACHE_NAME = "zhiyu-offline-v3-plan-recovery";
+const CACHE_NAME = "zhiyu-offline-v4-dual-storage";
 const APP_SHELL = ["./", "./index.html", "./manifest.json", "./favicon.svg", "./app-icon-cat-v1-192.png", "./app-icon-cat-v1-512.png"];
 
 self.addEventListener("install", (event) => {

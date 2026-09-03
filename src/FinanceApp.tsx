@@ -447,14 +447,21 @@ export default function FinanceApp() {
           const compatibilitySetupId = localStorage.getItem(PERSONAL_SETUP_KEY) ?? "";
           const compatibilitySettings = localStorage.getItem(SETTINGS_KEY);
           const compatibilityPlans = localStorage.getItem(PLANNED_KEY);
-          const recoverCompatibilityPlan = compatibilitySetupId
-            && compatibilitySetupId !== (stored.appliedSetupId ?? "")
-            && compatibilitySettings
-            && compatibilityPlans;
-          const recoveredSettings = recoverCompatibilityPlan ? normalizeSettings(JSON.parse(compatibilitySettings)) : normalizeSettings(stored.settings);
+          const parsedCompatibilitySettings = compatibilitySettings ? normalizeSettings(JSON.parse(compatibilitySettings)) : null;
+          const parsedCompatibilityPlans = compatibilityPlans ? JSON.parse(compatibilityPlans) as PlannedExpense[] : null;
+          const storedSettings = normalizeSettings(stored.settings);
+          const storedPlans = stored.plannedExpenses ?? [];
+          const storedPlanIsEmpty = storedSettings.monthlyBudget === 0 && storedPlans.length === 0;
+          const compatibilityPlanHasContent = !!parsedCompatibilitySettings
+            && !!parsedCompatibilityPlans
+            && (parsedCompatibilitySettings.monthlyBudget > 0 || parsedCompatibilityPlans.length > 0);
+          const recoverCompatibilityPlan = !!compatibilitySetupId
+            && compatibilityPlanHasContent
+            && (compatibilitySetupId !== (stored.appliedSetupId ?? "") || storedPlanIsEmpty);
+          const recoveredSettings = recoverCompatibilityPlan ? parsedCompatibilitySettings! : storedSettings;
           const recoveredPlans = recoverCompatibilityPlan
-            ? mergeSetupPlans(stored.plannedExpenses ?? [], JSON.parse(compatibilityPlans))
-            : (stored.plannedExpenses ?? []);
+            ? mergeSetupPlans(storedPlans, parsedCompatibilityPlans!)
+            : storedPlans;
           const recoveredSetupId = recoverCompatibilityPlan ? compatibilitySetupId : (stored.appliedSetupId ?? "");
           setTransactions(stored.transactions ?? []);
           setSettings(recoveredSettings);
@@ -509,6 +516,16 @@ export default function FinanceApp() {
 
   useEffect(() => {
     if (!ready) return;
+    // Mirror every committed state synchronously. This is the recovery copy if
+    // iOS suspends the home-screen app before IndexedDB finishes its write.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+      localStorage.setItem(PLANNED_KEY, JSON.stringify(plannedExpenses));
+      localStorage.setItem(PERSONAL_SETUP_KEY, appliedSetupId);
+    } catch {
+      setFlash("兼容备份写入失败，请立即导出到iCloud Drive");
+    }
     const timer = window.setTimeout(() => {
       const savedAt = new Date().toISOString();
       const snapshot: PersistedAppState = {
@@ -523,10 +540,6 @@ export default function FinanceApp() {
       savePersistentState(snapshot)
         .then(() => setLastSavedAt(savedAt))
         .catch(() => {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
-          localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-          localStorage.setItem(PLANNED_KEY, JSON.stringify(plannedExpenses));
-          localStorage.setItem(PERSONAL_SETUP_KEY, appliedSetupId);
           setFlash("本机数据库保存失败，已使用兼容存储；请立即备份到iCloud");
         });
     }, 180);
@@ -1113,7 +1126,7 @@ export default function FinanceApp() {
             <button className="secondary-button" onClick={() => setupInput.current?.click()}>导入个人计划</button>
             <ul>{settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
             {settings.billCategories?.length ? <p>本期日常额度 ¥{money(settings.monthlyBudget)} ＋ 单列账单计划 ¥{money(plannedBillsForCycle)}；单列账单已记 ¥{money(separateBillsSpent)}。定投另计。</p> : null}
-            <small>版本：自然月持久化修复版 2026.09.03</small>
+            <small>版本：自然月双存储修复版 2026.09.03</small>
           </article>
           <article className="workspace-panel full-width planned-manager">
             <div className="panel-heading"><div><p className="eyebrow">未来现金安排</p><h2>固定支出与到期提醒</h2><p className="settings-intro">预计支出不会算作已经花掉的钱；到期前30天会在总览突出提醒。</p></div><span className="soft-badge">未来90天 ¥{money(dueWithin90Days)}</span></div>
