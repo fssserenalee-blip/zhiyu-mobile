@@ -67,8 +67,8 @@ const STORAGE_KEY = "zhiyu-finance-v2";
 const SETTINGS_KEY = "zhiyu-settings-v3";
 const PLANNED_KEY = "zhiyu-planned-v1";
 const PERSONAL_SETUP_KEY = "zhiyu-personal-setup-v1";
-const TRACKING_START = "2026-08-21";
-const CYCLE_DAY = 21;
+const TRACKING_START = "2026-09-01";
+const CYCLE_DAY = 1;
 const DEFAULT_SETTINGS: Settings = {
   monthlyBudget: 0,
   reserveFund: 0,
@@ -653,8 +653,8 @@ export default function FinanceApp() {
       .reduce((sum, item) => sum + budgetValue(item), 0);
     setSelectedMonth(currentCycle);
     setFlash(previousCycle >= TRACKING_START
-      ? `上期总结：共支出 ¥${money(previousSpent)}；今天已开始新一期`
-      : "知余第一期已开始：8月21日至9月20日");
+      ? `上月总结：共支出 ¥${money(previousSpent)}；今天已开始新的自然月`
+      : `知余自然月计划已开始：${cycleLabel(currentCycle)}`);
     localStorage.setItem(reminderKey, "1");
   }, [ready, transactions]);
 
@@ -976,7 +976,7 @@ export default function FinanceApp() {
 
       {pendingSetup && <section className="personal-setup workspace-panel" aria-label="确认个人计划">
         <p className="eyebrow">个人计划 · 仅保存在本机</p><h1>确认个人计划</h1>
-        <p>日常每期上限 <strong>¥{money(pendingSetup.settings.monthlyBudget)}</strong>，每月21日开启新一期。房租、物业、保险另列；定投不计入消费。</p>
+        <p>日常每月上限 <strong>¥{money(pendingSetup.settings.monthlyBudget)}</strong>，每月1日开启新一期。房租、物业、保险另列；定投不计入消费。</p>
         <div className="setup-summary"><span>食品日用 <b>¥{money(pendingSetup.settings.foodLimit)}</b></span><span>自由消费 <b>¥{money(pendingSetup.settings.freeLimit)}</b></span><span>网购子额度 <b>¥{money(pendingSetup.settings.onlineLimit)}</b></span><span>资金池目标（非余额） <b>¥{money(pendingSetup.settings.reserveFund)}</b></span></div>
         <ul>{pendingSetup.settings.budgetNotes?.map(note => <li key={note}>{note}</li>)}</ul>
         <details><summary>核对 {pendingSetup.plannedExpenses.length} 项固定支出与定投</summary><ul>{pendingSetup.plannedExpenses.map(item => <li key={item.id}>{item.title} · ¥{money(item.amount)} · {item.dueDate}起 · {frequencyLabel(item.frequency)}</li>)}</ul></details>
@@ -1095,9 +1095,9 @@ export default function FinanceApp() {
           </article>
 
           <aside className="settings-stack">
-            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信自动化请使用 <code>/#sms=编码后的短信内容</code>，内容只在手机本地交给知余识别。</li><li>在短信快捷指令中把“当前日期｜短信内容”追加到 <code>iCloud Drive/Shortcuts/知余/短信流水.txt</code>；这个文件可直接在“从iCloud恢复”中导入。</li></ol><p className="fine-print">记账周期固定为每月21日至次月20日；21日生成上期总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
+            <article className="panel setup-card"><p className="eyebrow">快捷记账</p><h2>双击背面 → 金额输入</h2><ol><li>建立“打开URL”快捷指令，网址末尾使用 <code>/?quick=1</code>。</li><li>在“设置 → 辅助功能 → 触控 → 轻点背面”绑定轻点两下。</li><li>双击后直接聚焦金额框，选分类即可记下。</li><li>银行短信自动化请使用 <code>/#sms=编码后的短信内容</code>，内容只在手机本地交给知余识别。</li><li>在短信快捷指令中把“当前日期｜短信内容”追加到 <code>iCloud Drive/Shortcuts/知余/短信流水.txt</code>；这个文件可直接在“从iCloud恢复”中导入。</li></ol><p className="fine-print">记账周期固定为每月1日至月底；1日生成上月总结并自动进入新一期。资金划转和收入默认不占消费预算。</p></article>
             <article className="panel data-card"><p className="eyebrow">本机数据库与离线使用</p><h2>{storageHealth.persistent ? "已申请持久保存" : "已启用本机数据库"}</h2><p className="fine-print">流水已改用IndexedDB，并保留最近30个本地日快照；桌面版知余成功打开一次后可离线启动。iOS仍可能在清除网站数据、删除知余或空间不足时移除全部本地内容，所以iCloud备份仍是最终保障。</p><div className="data-status"><span>最近写入</span><b>{lastSavedAt ? new Date(lastSavedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "准备中"}</b><span>独立备份</span><b className={backupAgeDays === null || backupAgeDays > 7 ? "needs-backup" : ""}>{backupLabel}</b></div></article>
-            <article className="panel data-card"><p className="eyebrow">备份、恢复与检查</p><div className="button-stack"><button className="secondary-button" onClick={enableNotifications}>开启系统提醒</button><button className="secondary-button" onClick={exportBackup}>备份到iCloud Drive</button><button className="secondary-button" onClick={() => fileInput.current?.click()}>从iCloud恢复</button><button className="secondary-button" onClick={checkDataIntegrity} disabled={busy}>{busy ? "正在检查…" : "检查数据完整性"}</button><button className="danger-button" onClick={resetData}>清空本机数据</button></div><p className="fine-print">在iPhone分享窗口选择“存储到文件”→“iCloud Drive”→“知余”。建议每周备份一次，每月21日再保留一份月度副本。</p></article>
+            <article className="panel data-card"><p className="eyebrow">备份、恢复与检查</p><div className="button-stack"><button className="secondary-button" onClick={enableNotifications}>开启系统提醒</button><button className="secondary-button" onClick={exportBackup}>备份到iCloud Drive</button><button className="secondary-button" onClick={() => fileInput.current?.click()}>从iCloud恢复</button><button className="secondary-button" onClick={checkDataIntegrity} disabled={busy}>{busy ? "正在检查…" : "检查数据完整性"}</button><button className="danger-button" onClick={resetData}>清空本机数据</button></div><p className="fine-print">在iPhone分享窗口选择“存储到文件”→“iCloud Drive”→“知余”。建议每周备份一次，每月最后一天再保留一份月度副本。</p></article>
           </aside>
 
           <article className="workspace-panel full-width">
